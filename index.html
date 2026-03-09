@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>前踢分腿角度與自動截圖</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -24,7 +22,7 @@
         .container {
             position: relative;
             width: 100vw;
-            height: 50vh; /* 縮小一點給截圖空間 */
+            height: 50vh; 
             background-color: black;
             display: flex;
             justify-content: center;
@@ -45,6 +43,26 @@
             box-sizing: border-box;
             text-align: center;
             background: #2c3e50;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        button:active {
+            background-color: #2980b9;
+            transform: translateY(2px);
         }
         .angle-display {
             font-size: 20px;
@@ -70,7 +88,7 @@
             max-height: 30vh;
             border: 3px solid #f1c40f;
             border-radius: 8px;
-            display: none; /* 預設隱藏 */
+            display: none;
             margin-top: 10px;
         }
         .max-angle-text {
@@ -85,14 +103,18 @@
 <body>
 
     <div class="container">
-        <video class="input_video" playsinline style="display:none;"></video>
+        <video id="videoElement" playsinline style="display:none;"></video>
         <canvas class="output_canvas"></canvas>
         <canvas id="buffer_canvas" style="display:none;"></canvas>
     </div>
 
     <div class="info-panel">
+        <div class="controls">
+            <button id="startBtn">1. 啟動鏡頭</button>
+            <button id="switchBtn">2. 切換 (目前: 後鏡頭)</button>
+        </div>
         <div class="angle-display">目前角度: <span id="currentAngle">0</span>°</div>
-        <div class="status-display" id="statusText">等待踢擊動作...</div>
+        <div class="status-display" id="statusText">等待啟動鏡頭...</div>
     </div>
 
     <div class="result-panel">
@@ -101,11 +123,9 @@
     </div>
 
     <script>
-        const videoElement = document.getElementsByClassName('input_video')[0];
+        const videoElement = document.getElementById('videoElement');
         const canvasElement = document.getElementsByClassName('output_canvas')[0];
         const canvasCtx = canvasElement.getContext('2d');
-        
-        // 隱藏的緩衝畫布
         const bufferCanvas = document.getElementById('buffer_canvas');
         const bufferCtx = bufferCanvas.getContext('2d');
 
@@ -114,14 +134,20 @@
         const maxAngleEl = document.getElementById('maxAngle');
         const screenshotImg = document.getElementById('screenshotImg');
         const finalAngleText = document.getElementById('finalAngleText');
+        
+        const startBtn = document.getElementById('startBtn');
+        const switchBtn = document.getElementById('switchBtn');
 
         // 動作狀態變數
         let isKicking = false;
         let currentMaxAngle = 0;
+        let useFrontCamera = false; // 預設使用後鏡頭
+        let currentStream = null;
+        let requestAnimFrameId = null;
+        let poseLoaded = false;
         
-        // 判定參數 (可以依照實際測試情況微調)
-        const START_KICK_THRESHOLD = 40; // 角度大於 40 度視為開始踢擊
-        const END_KICK_DROP = 15;        // 角度從最高點掉落 15 度視為踢擊結束
+        const START_KICK_THRESHOLD = 40; 
+        const END_KICK_DROP = 15;        
 
         // 計算兩個向量之間的夾角
         function calculateAngle(hip1, ankle1, hip2, ankle2) {
@@ -135,13 +161,30 @@
             const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
 
             if (mag1 === 0 || mag2 === 0) return 0;
-
             let angleRad = Math.acos(dotProduct / (mag1 * mag2));
             return angleRad * (180 / Math.PI);
         }
 
+        // 初始化 MediaPipe Pose 模型
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+        pose.setOptions({
+            modelComplexity: 1, 
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        pose.onResults(onResults);
+        pose.initialize().then(() => {
+            poseLoaded = true;
+            if(statusTextEl.innerText === "等待啟動鏡頭...") {
+                statusTextEl.innerText = "模型載入完成，請點擊啟動鏡頭";
+            }
+        });
+
         function onResults(results) {
-            // 同步畫布尺寸
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
             bufferCanvas.width = videoElement.videoWidth;
@@ -149,6 +192,13 @@
             
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 如果是前鏡頭，將畫面水平翻轉 (鏡像)
+            if (useFrontCamera) {
+                canvasCtx.translate(canvasElement.width, 0);
+                canvasCtx.scale(-1, 1);
+            }
+            
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
             if (results.poseLandmarks) {
@@ -167,23 +217,97 @@
                     let angle = Math.round(calculateAngle(leftHip, leftAnkle, rightHip, rightAnkle));
                     currentAngleEl.innerText = angle;
 
-                    // 動作偵測邏輯
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
-                        // 1. 觸發踢擊開始
                         isKicking = true;
                         currentMaxAngle = angle;
                         statusTextEl.innerText = "偵測到踢擊，記錄中...";
-                        statusTextEl.style.color = "#e74c3c"; // 變成紅色提示錄影中
+                        statusTextEl.style.color = "#e74c3c"; 
                         
-                        // 將當下畫面畫到隱藏畫布
+                        bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
                         bufferCtx.drawImage(canvasElement, 0, 0);
 
                     } else if (isKicking) {
-                        // 2. 踢擊過程中
                         if (angle > currentMaxAngle) {
-                            // 角度破紀錄，更新最高點與暫存畫面
                             currentMaxAngle = angle;
+                            bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
                             bufferCtx.drawImage(canvasElement, 0, 0);
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
-                            // 3. 腿放下了 (角度從最高點下降超過閾值)，判定結束
-                            isK
+                            isKicking = false;
+                            statusTextEl.innerText = "踢擊完成！等待下一次動作...";
+                            statusTextEl.style.color = "#2ecc71"; 
+                            
+                            maxAngleEl.innerText = currentMaxAngle;
+                            finalAngleText.style.display = "block";
+                            screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.8);
+                            screenshotImg.style.display = "block";
+                            currentMaxAngle = 0;
+                        }
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        // 啟動或切換鏡頭的核心邏輯
+        async function startCamera() {
+            if (!poseLoaded) {
+                alert("AI 模型還在載入中，請稍等幾秒鐘再試！");
+                return;
+            }
+
+            // 關閉現有的鏡頭連線
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
+            const constraints = {
+                video: {
+                    facingMode: useFrontCamera ? "user" : "environment",
+                    width: { ideal: 640 },
+                    height: { ideal: 480 }
+                }
+            };
+
+            try {
+                // 請求鏡頭權限
+                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = currentStream;
+                videoElement.play();
+                statusTextEl.innerText = "等待踢擊動作...";
+                startBtn.style.display = "none"; // 成功啟動後隱藏啟動按鈕
+            } catch (err) {
+                console.error("鏡頭錯誤: ", err);
+                alert("無法存取鏡頭！請確認你已在瀏覽器設定中允許此網頁使用攝影機。");
+            }
+        }
+
+        // 監聽影片播放，將畫面送給 AI 模型分析
+        videoElement.addEventListener('play', () => {
+            let lastVideoTime = -1;
+            async function processFrame() {
+                if (!videoElement.paused && !videoElement.ended) {
+                    if (videoElement.currentTime !== lastVideoTime) {
+                        lastVideoTime = videoElement.currentTime;
+                        await pose.send({image: videoElement});
+                    }
+                    requestAnimFrameId = requestAnimationFrame(processFrame);
+                }
+            }
+            processFrame();
+        });
+
+        // 按鈕事件綁定
+        startBtn.addEventListener('click', startCamera);
+
+        switchBtn.addEventListener('click', () => {
+            useFrontCamera = !useFrontCamera;
+            switchBtn.innerText = `2. 切換 (目前: ${useFrontCamera ? '前' : '後'}鏡頭)`;
+            // 如果已經啟動過鏡頭，直接重啟以套用新鏡頭
+            if (currentStream) {
+                startCamera();
+            }
+        });
+
+    </script>
+</body>
+</html>
