@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢分腿角度偵測</title>
+    <title>前踢分腿角度與自動截圖</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
@@ -19,12 +19,12 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            overflow: hidden;
+            overflow-x: hidden;
         }
         .container {
             position: relative;
             width: 100vw;
-            height: 70vh;
+            height: 50vh; /* 縮小一點給截圖空間 */
             background-color: black;
             display: flex;
             justify-content: center;
@@ -36,42 +36,49 @@
             height: 100%;
             object-fit: contain;
         }
-        canvas {
+        .output_canvas {
             z-index: 10;
         }
         .info-panel {
             width: 100%;
-            padding: 20px;
+            padding: 15px;
             box-sizing: border-box;
             text-align: center;
             background: #2c3e50;
-            height: 30vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
         }
         .angle-display {
-            font-size: 24px;
-            margin: 10px 0;
+            font-size: 20px;
+            margin: 5px 0;
         }
-        .max-angle-display {
-            font-size: 32px;
-            font-weight: bold;
-            color: #f1c40f;
-            margin: 10px 0;
-        }
-        button {
-            padding: 15px 30px;
+        .status-display {
             font-size: 18px;
-            background-color: #e74c3c;
-            color: white;
-            border: none;
+            color: #2ecc71;
+            font-weight: bold;
+            height: 24px;
+        }
+        .result-panel {
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: #1a1a1a;
+        }
+        #screenshotImg {
+            max-width: 90%;
+            max-height: 30vh;
+            border: 3px solid #f1c40f;
             border-radius: 8px;
-            cursor: pointer;
+            display: none; /* 預設隱藏 */
             margin-top: 10px;
         }
-        button:active {
-            background-color: #c0392b;
+        .max-angle-text {
+            font-size: 24px;
+            color: #f1c40f;
+            font-weight: bold;
+            margin-top: 10px;
+            display: none;
         }
     </style>
 </head>
@@ -80,12 +87,17 @@
     <div class="container">
         <video class="input_video" playsinline style="display:none;"></video>
         <canvas class="output_canvas"></canvas>
+        <canvas id="buffer_canvas" style="display:none;"></canvas>
     </div>
 
     <div class="info-panel">
         <div class="angle-display">目前角度: <span id="currentAngle">0</span>°</div>
-        <div class="max-angle-display">最高點最大角度: <span id="maxAngle">0</span>°</div>
-        <button onclick="resetMaxAngle()">重置紀錄</button>
+        <div class="status-display" id="statusText">等待踢擊動作...</div>
+    </div>
+
+    <div class="result-panel">
+        <div class="max-angle-text" id="finalAngleText">最高點角度: <span id="maxAngle">0</span>°</div>
+        <img id="screenshotImg" alt="最高點截圖">
     </div>
 
     <script>
@@ -93,26 +105,31 @@
         const canvasElement = document.getElementsByClassName('output_canvas')[0];
         const canvasCtx = canvasElement.getContext('2d');
         
+        // 隱藏的緩衝畫布
+        const bufferCanvas = document.getElementById('buffer_canvas');
+        const bufferCtx = bufferCanvas.getContext('2d');
+
         const currentAngleEl = document.getElementById('currentAngle');
+        const statusTextEl = document.getElementById('statusText');
         const maxAngleEl = document.getElementById('maxAngle');
+        const screenshotImg = document.getElementById('screenshotImg');
+        const finalAngleText = document.getElementById('finalAngleText');
 
-        let maxAngle = 0;
-
-        function resetMaxAngle() {
-            maxAngle = 0;
-            maxAngleEl.innerText = "0";
-        }
+        // 動作狀態變數
+        let isKicking = false;
+        let currentMaxAngle = 0;
+        
+        // 判定參數 (可以依照實際測試情況微調)
+        const START_KICK_THRESHOLD = 40; // 角度大於 40 度視為開始踢擊
+        const END_KICK_DROP = 15;        // 角度從最高點掉落 15 度視為踢擊結束
 
         // 計算兩個向量之間的夾角
         function calculateAngle(hip1, ankle1, hip2, ankle2) {
-            // 向量 1 (第一條腿)
             const dx1 = ankle1.x - hip1.x;
             const dy1 = ankle1.y - hip1.y;
-            // 向量 2 (第二條腿)
             const dx2 = ankle2.x - hip2.x;
             const dy2 = ankle2.y - hip2.y;
 
-            // 內積公式
             const dotProduct = dx1 * dx2 + dy1 * dy2;
             const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
             const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
@@ -120,73 +137,53 @@
             if (mag1 === 0 || mag2 === 0) return 0;
 
             let angleRad = Math.acos(dotProduct / (mag1 * mag2));
-            let angleDeg = angleRad * (180 / Math.PI);
-            return angleDeg;
+            return angleRad * (180 / Math.PI);
         }
 
         function onResults(results) {
-            // 設定畫布尺寸符合影片
+            // 同步畫布尺寸
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
+            bufferCanvas.width = videoElement.videoWidth;
+            bufferCanvas.height = videoElement.videoHeight;
             
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            // 繪製原始影像
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
             if (results.poseLandmarks) {
-                // 畫出骨架
                 drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
                 drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
 
-                // 取得左右臀部與左右腳踝的座標
                 const landmarks = results.poseLandmarks;
                 const leftHip = landmarks[23];
                 const rightHip = landmarks[24];
                 const leftAnkle = landmarks[27];
                 const rightAnkle = landmarks[28];
 
-                // 確認這四個點的辨識信心度足夠 (visibility > 0.5)
                 if (leftHip.visibility > 0.5 && rightHip.visibility > 0.5 && 
                     leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5) {
                     
-                    // 計算兩腿向量的夾角
-                    let angle = calculateAngle(leftHip, leftAnkle, rightHip, rightAnkle);
-                    angle = Math.round(angle);
-
+                    let angle = Math.round(calculateAngle(leftHip, leftAnkle, rightHip, rightAnkle));
                     currentAngleEl.innerText = angle;
 
-                    // 記錄最大角度（即踢擊最高點）
-                    if (angle > maxAngle) {
-                        maxAngle = angle;
-                        maxAngleEl.innerText = maxAngle;
-                    }
-                }
-            }
-            canvasCtx.restore();
-        }
+                    // 動作偵測邏輯
+                    if (!isKicking && angle > START_KICK_THRESHOLD) {
+                        // 1. 觸發踢擊開始
+                        isKicking = true;
+                        currentMaxAngle = angle;
+                        statusTextEl.innerText = "偵測到踢擊，記錄中...";
+                        statusTextEl.style.color = "#e74c3c"; // 變成紅色提示錄影中
+                        
+                        // 將當下畫面畫到隱藏畫布
+                        bufferCtx.drawImage(canvasElement, 0, 0);
 
-        const pose = new Pose({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-        }});
-        pose.setOptions({
-            modelComplexity: 1, // 1 對於手機效能與準確度的平衡最好
-            smoothLandmarks: true,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
-        pose.onResults(onResults);
-
-        // 啟動手機後置鏡頭 (environment)
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await pose.send({image: videoElement});
-            },
-            width: 640,
-            height: 480,
-            facingMode: 'environment' // 使用手機背面鏡頭
-        });
-        camera.start();
-    </script>
-</body>
-</html>
+                    } else if (isKicking) {
+                        // 2. 踢擊過程中
+                        if (angle > currentMaxAngle) {
+                            // 角度破紀錄，更新最高點與暫存畫面
+                            currentMaxAngle = angle;
+                            bufferCtx.drawImage(canvasElement, 0, 0);
+                        } else if (angle < currentMaxAngle - END_KICK_DROP) {
+                            // 3. 腿放下了 (角度從最高點下降超過閾值)，判定結束
+                            isK
