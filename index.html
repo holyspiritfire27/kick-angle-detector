@@ -47,11 +47,12 @@
         .controls {
             display: flex;
             justify-content: center;
-            gap: 15px;
+            gap: 10px;
             margin-bottom: 10px;
+            flex-wrap: wrap;
         }
         button {
-            padding: 10px 20px;
+            padding: 10px 15px;
             font-size: 16px;
             background-color: #3498db;
             color: white;
@@ -64,12 +65,19 @@
             background-color: #2980b9;
             transform: translateY(2px);
         }
+        #downloadBtn {
+            background-color: #e67e22;
+            display: none; /* 預設隱藏，踢完才顯示 */
+        }
+        #downloadBtn:active {
+            background-color: #d35400;
+        }
         .angle-display {
             font-size: 20px;
             margin: 5px 0;
         }
         .status-display {
-            font-size: 18px;
+            font-size: 16px;
             color: #2ecc71;
             font-weight: bold;
             height: 24px;
@@ -85,25 +93,32 @@
         }
         #screenshotImg {
             max-width: 90%;
-            max-height: 30vh;
+            max-height: 25vh;
             border: 3px solid #f1c40f;
             border-radius: 8px;
             display: none;
             margin-top: 10px;
+            margin-bottom: 15px;
         }
         .max-angle-text {
             font-size: 24px;
             color: #f1c40f;
             font-weight: bold;
-            margin-top: 10px;
+            margin-top: 5px;
             display: none;
+        }
+        #debugLog {
+            font-size: 12px;
+            color: #e74c3c;
+            margin-top: 5px;
         }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <video id="videoElement" playsinline style="display:none;"></video>
+        <video id="videoElement" playsinline autoplay muted style="display:none;"></video>
+        
         <canvas class="output_canvas"></canvas>
         <canvas id="buffer_canvas" style="display:none;"></canvas>
     </div>
@@ -111,15 +126,17 @@
     <div class="info-panel">
         <div class="controls">
             <button id="startBtn">1. 啟動鏡頭</button>
-            <button id="switchBtn">2. 切換 (目前: 後鏡頭)</button>
+            <button id="switchBtn">2. 切換前後鏡</button>
         </div>
         <div class="angle-display">目前角度: <span id="currentAngle">0</span>°</div>
         <div class="status-display" id="statusText">等待啟動鏡頭...</div>
+        <div id="debugLog"></div>
     </div>
 
     <div class="result-panel">
         <div class="max-angle-text" id="finalAngleText">最高點角度: <span id="maxAngle">0</span>°</div>
         <img id="screenshotImg" alt="最高點截圖">
+        <button id="downloadBtn">⬇️ 下載截圖至手機</button>
     </div>
 
     <script>
@@ -134,22 +151,22 @@
         const maxAngleEl = document.getElementById('maxAngle');
         const screenshotImg = document.getElementById('screenshotImg');
         const finalAngleText = document.getElementById('finalAngleText');
+        const debugLog = document.getElementById('debugLog');
         
         const startBtn = document.getElementById('startBtn');
         const switchBtn = document.getElementById('switchBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
 
-        // 動作狀態變數
         let isKicking = false;
         let currentMaxAngle = 0;
-        let useFrontCamera = false; // 預設使用後鏡頭
+        let useFrontCamera = false; 
         let currentStream = null;
-        let requestAnimFrameId = null;
         let poseLoaded = false;
+        let isProcessingFrame = false; // 防止運算卡死的鎖
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
 
-        // 計算兩個向量之間的夾角
         function calculateAngle(hip1, ankle1, hip2, ankle2) {
             const dx1 = ankle1.x - hip1.x;
             const dy1 = ankle1.y - hip1.y;
@@ -165,7 +182,6 @@
             return angleRad * (180 / Math.PI);
         }
 
-        // 初始化 MediaPipe Pose 模型
         const pose = new Pose({locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
         }});
@@ -180,7 +196,7 @@
         pose.initialize().then(() => {
             poseLoaded = true;
             if(statusTextEl.innerText === "等待啟動鏡頭...") {
-                statusTextEl.innerText = "模型載入完成，請點擊啟動鏡頭";
+                statusTextEl.innerText = "模型就緒，請點擊啟動";
             }
         });
 
@@ -193,7 +209,6 @@
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
-            // 如果是前鏡頭，將畫面水平翻轉 (鏡像)
             if (useFrontCamera) {
                 canvasCtx.translate(canvasElement.width, 0);
                 canvasCtx.scale(-1, 1);
@@ -220,8 +235,9 @@
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
                         isKicking = true;
                         currentMaxAngle = angle;
-                        statusTextEl.innerText = "偵測到踢擊，記錄中...";
+                        statusTextEl.innerText = "偵測中... (踢擊進行中)";
                         statusTextEl.style.color = "#e74c3c"; 
+                        downloadBtn.style.display = "none"; // 隱藏下載按鈕
                         
                         bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
                         bufferCtx.drawImage(canvasElement, 0, 0);
@@ -233,29 +249,32 @@
                             bufferCtx.drawImage(canvasElement, 0, 0);
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
                             isKicking = false;
-                            statusTextEl.innerText = "踢擊完成！等待下一次動作...";
+                            statusTextEl.innerText = "完成！可繼續下一次踢擊";
                             statusTextEl.style.color = "#2ecc71"; 
                             
                             maxAngleEl.innerText = currentMaxAngle;
                             finalAngleText.style.display = "block";
-                            screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.8);
+                            screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
+                            downloadBtn.style.display = "block"; // 顯示下載按鈕
+                            
                             currentMaxAngle = 0;
                         }
                     }
                 }
             }
             canvasCtx.restore();
+            isProcessingFrame = false; // 解除鎖定
         }
 
-        // 啟動或切換鏡頭的核心邏輯
         async function startCamera() {
             if (!poseLoaded) {
-                alert("AI 模型還在載入中，請稍等幾秒鐘再試！");
+                alert("AI 尚未準備好，請稍等。");
                 return;
             }
 
-            // 關閉現有的鏡頭連線
+            debugLog.innerText = "正在請求鏡頭權限...";
+            
             if (currentStream) {
                 currentStream.getTracks().forEach(track => track.stop());
             }
@@ -265,47 +284,56 @@
                     facingMode: useFrontCamera ? "user" : "environment",
                     width: { ideal: 640 },
                     height: { ideal: 480 }
-                }
+                },
+                audio: false
             };
 
             try {
-                // 請求鏡頭權限
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = currentStream;
-                videoElement.play();
-                statusTextEl.innerText = "等待踢擊動作...";
-                startBtn.style.display = "none"; // 成功啟動後隱藏啟動按鈕
+                
+                // 確保影片播放成功
+                await videoElement.play();
+                
+                statusTextEl.innerText = "鏡頭已啟動！請開始動作";
+                debugLog.innerText = "";
+                startBtn.style.display = "none"; 
+                
+                // 開始影像處理迴圈
+                requestAnimationFrame(processFrame);
+                
             } catch (err) {
-                console.error("鏡頭錯誤: ", err);
-                alert("無法存取鏡頭！請確認你已在瀏覽器設定中允許此網頁使用攝影機。");
+                debugLog.innerText = "錯誤: " + err.message;
+                alert("無法存取鏡頭！請確認您的瀏覽器設定已允許此網頁使用攝影機。");
             }
         }
 
-        // 監聽影片播放，將畫面送給 AI 模型分析
-        videoElement.addEventListener('play', () => {
-            let lastVideoTime = -1;
-            async function processFrame() {
-                if (!videoElement.paused && !videoElement.ended) {
-                    if (videoElement.currentTime !== lastVideoTime) {
-                        lastVideoTime = videoElement.currentTime;
-                        await pose.send({image: videoElement});
-                    }
-                    requestAnimFrameId = requestAnimationFrame(processFrame);
-                }
+        // 獨立的影像處理迴圈，避免卡死
+        async function processFrame() {
+            if (!videoElement.paused && !videoElement.ended && !isProcessingFrame) {
+                isProcessingFrame = true;
+                await pose.send({image: videoElement});
             }
-            processFrame();
-        });
+            // 持續呼叫自己，形成迴圈
+            requestAnimationFrame(processFrame);
+        }
 
-        // 按鈕事件綁定
         startBtn.addEventListener('click', startCamera);
 
         switchBtn.addEventListener('click', () => {
             useFrontCamera = !useFrontCamera;
-            switchBtn.innerText = `2. 切換 (目前: ${useFrontCamera ? '前' : '後'}鏡頭)`;
-            // 如果已經啟動過鏡頭，直接重啟以套用新鏡頭
             if (currentStream) {
-                startCamera();
+                startCamera(); // 重新啟動以套用新鏡頭
             }
+        });
+
+        // 下載圖片按鈕邏輯
+        downloadBtn.addEventListener('click', () => {
+            const link = document.createElement('a');
+            // 設定下載的檔名，包含當時的角度
+            link.download = `kick_angle_${maxAngleEl.innerText}deg.jpg`;
+            link.href = screenshotImg.src;
+            link.click();
         });
 
     </script>
