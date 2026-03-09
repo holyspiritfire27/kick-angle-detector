@@ -16,10 +16,9 @@
             height: 100%;
             background-color: black;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            overflow: hidden; /* 防止滾動 */
+            overflow: hidden; 
         }
 
-        /* 鏡頭畫面滿版容器 */
         .camera-container {
             position: absolute;
             top: 0;
@@ -29,7 +28,7 @@
             z-index: 1;
         }
 
-        /* 影片與畫布設定 contain 以確保受試者不會被裁切出畫面外 */
+        /* contain 確保畫面比例正確，不被裁切 */
         video, .output_canvas {
             position: absolute;
             top: 0;
@@ -39,7 +38,6 @@
             object-fit: contain; 
         }
 
-        /* UI 介面浮動層 */
         .ui-layer {
             position: absolute;
             top: 0;
@@ -47,41 +45,40 @@
             width: 100%;
             height: 100%;
             z-index: 20;
-            pointer-events: none; /* 讓點擊穿透到按鈕上 */
+            pointer-events: none; 
             display: flex;
             flex-direction: column;
             justify-content: space-between;
         }
 
-        /* 上方與下方控制面板 (半透明黑底) */
         .top-panel, .bottom-panel {
-            pointer-events: auto; /* 恢復面板的點擊能力 */
+            pointer-events: auto; 
             background: rgba(0, 0, 0, 0.65);
             padding: 15px;
             text-align: center;
             color: white;
             width: 100%;
             box-sizing: border-box;
-            backdrop-filter: blur(4px); /* 背景模糊增加質感 */
+            backdrop-filter: blur(4px); 
         }
 
         .controls {
             display: flex;
             justify-content: center;
-            gap: 10px;
+            gap: 15px;
             margin-bottom: 10px;
-            flex-wrap: wrap;
         }
 
         button {
-            padding: 10px 15px;
-            font-size: 15px;
+            padding: 12px 20px;
+            font-size: 16px;
             background-color: #3498db;
             color: white;
             border: none;
             border-radius: 8px;
             cursor: pointer;
             box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+            font-weight: bold;
         }
 
         button:active { background-color: #2980b9; transform: translateY(2px); }
@@ -137,7 +134,6 @@
             <div class="controls">
                 <button id="startBtn">啟動鏡頭</button>
                 <button id="switchBtn">切換鏡頭</button>
-                <button id="fullscreenBtn">🔲 全螢幕</button>
             </div>
             <div class="status-display" id="statusText">等待啟動...</div>
             <div id="debugLog"></div>
@@ -167,7 +163,6 @@
         
         const startBtn = document.getElementById('startBtn');
         const switchBtn = document.getElementById('switchBtn');
-        const fullscreenBtn = document.getElementById('fullscreenBtn');
         const downloadBtn = document.getElementById('downloadBtn');
 
         let isKicking = false;
@@ -268,7 +263,6 @@
                             
                             maxAngleEl.innerText = currentMaxAngle;
                             
-                            // 產生截圖並顯示在右下角
                             screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
                             downloadBtn.style.display = "block"; 
@@ -289,15 +283,19 @@
             }
 
             debugLog.innerText = "正在請求鏡頭...";
+            
+            // 徹底關閉並清空先前的鏡頭連線，避免切換時當機
             if (currentStream) {
                 currentStream.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null; 
             }
 
-            // 拿掉 width 與 height 的限制，讓手機輸出自然視角，解決放大問題
-            // 後鏡頭使用 { ideal: "environment" } 增加相容性
+            // 要求高解析度 (1080p) 以強制手機使用廣角，避免 Zoom-in 裁切
             const constraints = {
                 video: {
-                    facingMode: useFrontCamera ? "user" : { ideal: "environment" }
+                    facingMode: useFrontCamera ? "user" : "environment",
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
                 },
                 audio: false
             };
@@ -307,7 +305,7 @@
                 videoElement.srcObject = currentStream;
                 await videoElement.play();
                 
-                statusTextEl.innerText = "鏡頭已啟動，請全身入鏡";
+                statusTextEl.innerText = `已啟動 (${useFrontCamera ? '前' : '後'}鏡頭)`;
                 debugLog.innerText = "";
                 startBtn.style.display = "none"; 
                 
@@ -315,7 +313,7 @@
                 
             } catch (err) {
                 debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
-                alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機，或嘗試切換鏡頭。");
+                alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機。");
             }
         }
 
@@ -329,36 +327,14 @@
 
         startBtn.addEventListener('click', startCamera);
 
-        switchBtn.addEventListener('click', () => {
+        // 切換鏡頭邏輯優化
+        switchBtn.addEventListener('click', async () => {
             useFrontCamera = !useFrontCamera;
             if (currentStream) {
-                startCamera(); 
+                // 如果原本已經在錄影，點擊切換就重新執行 startCamera
+                await startCamera(); 
             } else {
                 statusTextEl.innerText = `已切換為${useFrontCamera ? '前' : '後'}鏡頭，請點啟動`;
-            }
-        });
-
-        // 全螢幕按鈕邏輯
-        fullscreenBtn.addEventListener('click', () => {
-            let elem = document.documentElement;
-            if (!document.fullscreenElement) {
-                if (elem.requestFullscreen) {
-                    elem.requestFullscreen();
-                } else if (elem.webkitRequestFullscreen) { /* Safari */
-                    elem.webkitRequestFullscreen();
-                } else if (elem.msRequestFullscreen) { /* IE11 */
-                    elem.msRequestFullscreen();
-                }
-                fullscreenBtn.innerText = "🔲 退出全螢幕";
-            } else {
-                if (document.exitFullscreen) {
-                    document.exitFullscreen();
-                } else if (document.webkitExitFullscreen) { /* Safari */
-                    document.webkitExitFullscreen();
-                } else if (document.msExitFullscreen) { /* IE11 */
-                    document.msExitFullscreen();
-                }
-                fullscreenBtn.innerText = "🔲 全螢幕";
             }
         });
 
