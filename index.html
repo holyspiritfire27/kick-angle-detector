@@ -3,47 +3,68 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢分腿角度與自動截圖</title>
+    <title>前踢動作分析系統</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
     <style>
-        body {
+        /* 基礎全螢幕設定 */
+        html, body {
             margin: 0;
             padding: 0;
-            background-color: #1a1a1a;
-            color: white;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            overflow-x: hidden;
-        }
-        .container {
-            position: relative;
-            width: 100vw;
-            height: 50vh; 
-            background-color: black;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        video, canvas {
-            position: absolute;
             width: 100%;
             height: 100%;
-            object-fit: contain;
+            background-color: black;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden; /* 防止滾動 */
         }
-        .output_canvas {
-            z-index: 10;
+
+        /* 鏡頭畫面滿版容器 */
+        .camera-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
         }
-        .info-panel {
+
+        /* 影片與畫布設定 contain 以確保受試者不會被裁切出畫面外 */
+        video, .output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
-            padding: 15px;
-            box-sizing: border-box;
-            text-align: center;
-            background: #2c3e50;
+            height: 100%;
+            object-fit: contain; 
         }
+
+        /* UI 介面浮動層 */
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            pointer-events: none; /* 讓點擊穿透到按鈕上 */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        /* 上方與下方控制面板 (半透明黑底) */
+        .top-panel, .bottom-panel {
+            pointer-events: auto; /* 恢復面板的點擊能力 */
+            background: rgba(0, 0, 0, 0.65);
+            padding: 15px;
+            text-align: center;
+            color: white;
+            width: 100%;
+            box-sizing: border-box;
+            backdrop-filter: blur(4px); /* 背景模糊增加質感 */
+        }
+
         .controls {
             display: flex;
             justify-content: center;
@@ -51,93 +72,85 @@
             margin-bottom: 10px;
             flex-wrap: wrap;
         }
+
         button {
             padding: 10px 15px;
-            font-size: 16px;
+            font-size: 15px;
             background-color: #3498db;
             color: white;
             border: none;
             border-radius: 8px;
             cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.5);
         }
-        button:active {
-            background-color: #2980b9;
-            transform: translateY(2px);
-        }
+
+        button:active { background-color: #2980b9; transform: translateY(2px); }
+        
         #downloadBtn {
             background-color: #e67e22;
-            display: none; /* 預設隱藏，踢完才顯示 */
+            display: none;
+            margin: 10px auto 0 auto;
+            width: fit-content;
         }
-        #downloadBtn:active {
-            background-color: #d35400;
-        }
-        .angle-display {
-            font-size: 20px;
-            margin: 5px 0;
-        }
+        
         .status-display {
-            font-size: 16px;
+            font-size: 18px;
             color: #2ecc71;
             font-weight: bold;
-            height: 24px;
+            margin-top: 5px;
         }
-        .result-panel {
-            width: 100%;
-            padding: 20px;
-            box-sizing: border-box;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            background: #1a1a1a;
+
+        .angle-info {
+            font-size: 24px;
+            font-weight: bold;
         }
+
+        #currentAngle { color: white; }
+        #maxAngle { color: #f1c40f; font-size: 32px; }
+
         #screenshotImg {
-            max-width: 90%;
-            max-height: 25vh;
-            border: 3px solid #f1c40f;
+            max-width: 40%;
+            max-height: 20vh;
+            border: 2px solid #f1c40f;
             border-radius: 8px;
             display: none;
-            margin-top: 10px;
-            margin-bottom: 15px;
+            position: absolute;
+            bottom: 120px;
+            right: 15px;
+            z-index: 30;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.8);
         }
-        .max-angle-text {
-            font-size: 24px;
-            color: #f1c40f;
-            font-weight: bold;
-            margin-top: 5px;
-            display: none;
-        }
-        #debugLog {
-            font-size: 12px;
-            color: #e74c3c;
-            margin-top: 5px;
-        }
+
+        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; }
     </style>
 </head>
 <body>
 
-    <div class="container">
+    <div class="camera-container">
         <video id="videoElement" playsinline autoplay muted style="display:none;"></video>
-        
         <canvas class="output_canvas"></canvas>
         <canvas id="buffer_canvas" style="display:none;"></canvas>
     </div>
 
-    <div class="info-panel">
-        <div class="controls">
-            <button id="startBtn">1. 啟動鏡頭</button>
-            <button id="switchBtn">2. 切換前後鏡</button>
+    <div class="ui-layer">
+        <div class="top-panel">
+            <div class="controls">
+                <button id="startBtn">啟動鏡頭</button>
+                <button id="switchBtn">切換鏡頭</button>
+                <button id="fullscreenBtn">🔲 全螢幕</button>
+            </div>
+            <div class="status-display" id="statusText">等待啟動...</div>
+            <div id="debugLog"></div>
         </div>
-        <div class="angle-display">目前角度: <span id="currentAngle">0</span>°</div>
-        <div class="status-display" id="statusText">等待啟動鏡頭...</div>
-        <div id="debugLog"></div>
+
+        <div class="bottom-panel">
+            <div class="angle-info">目前角度: <span id="currentAngle">0</span>°</div>
+            <div class="angle-info" id="finalAngleText">最高點角度: <span id="maxAngle">0</span>°</div>
+            <button id="downloadBtn">⬇️ 下載截圖</button>
+        </div>
     </div>
 
-    <div class="result-panel">
-        <div class="max-angle-text" id="finalAngleText">最高點角度: <span id="maxAngle">0</span>°</div>
-        <img id="screenshotImg" alt="最高點截圖">
-        <button id="downloadBtn">⬇️ 下載截圖至手機</button>
-    </div>
+    <img id="screenshotImg" alt="截圖">
 
     <script>
         const videoElement = document.getElementById('videoElement');
@@ -150,19 +163,19 @@
         const statusTextEl = document.getElementById('statusText');
         const maxAngleEl = document.getElementById('maxAngle');
         const screenshotImg = document.getElementById('screenshotImg');
-        const finalAngleText = document.getElementById('finalAngleText');
         const debugLog = document.getElementById('debugLog');
         
         const startBtn = document.getElementById('startBtn');
         const switchBtn = document.getElementById('switchBtn');
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
         const downloadBtn = document.getElementById('downloadBtn');
 
         let isKicking = false;
         let currentMaxAngle = 0;
-        let useFrontCamera = false; 
+        let useFrontCamera = false; // 預設使用後鏡頭
         let currentStream = null;
         let poseLoaded = false;
-        let isProcessingFrame = false; // 防止運算卡死的鎖
+        let isProcessingFrame = false; 
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
@@ -195,7 +208,7 @@
         pose.onResults(onResults);
         pose.initialize().then(() => {
             poseLoaded = true;
-            if(statusTextEl.innerText === "等待啟動鏡頭...") {
+            if(statusTextEl.innerText === "等待啟動...") {
                 statusTextEl.innerText = "模型就緒，請點擊啟動";
             }
         });
@@ -235,9 +248,10 @@
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
                         isKicking = true;
                         currentMaxAngle = angle;
-                        statusTextEl.innerText = "偵測中... (踢擊進行中)";
+                        statusTextEl.innerText = "偵測中... (記錄中)";
                         statusTextEl.style.color = "#e74c3c"; 
-                        downloadBtn.style.display = "none"; // 隱藏下載按鈕
+                        downloadBtn.style.display = "none";
+                        screenshotImg.style.display = "none";
                         
                         bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
                         bufferCtx.drawImage(canvasElement, 0, 0);
@@ -249,14 +263,15 @@
                             bufferCtx.drawImage(canvasElement, 0, 0);
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
                             isKicking = false;
-                            statusTextEl.innerText = "完成！可繼續下一次踢擊";
+                            statusTextEl.innerText = "完成！可進行下一次";
                             statusTextEl.style.color = "#2ecc71"; 
                             
                             maxAngleEl.innerText = currentMaxAngle;
-                            finalAngleText.style.display = "block";
+                            
+                            // 產生截圖並顯示在右下角
                             screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
-                            downloadBtn.style.display = "block"; // 顯示下載按鈕
+                            downloadBtn.style.display = "block"; 
                             
                             currentMaxAngle = 0;
                         }
@@ -264,26 +279,25 @@
                 }
             }
             canvasCtx.restore();
-            isProcessingFrame = false; // 解除鎖定
+            isProcessingFrame = false; 
         }
 
         async function startCamera() {
             if (!poseLoaded) {
-                alert("AI 尚未準備好，請稍等。");
+                alert("AI 尚未準備好，請稍等幾秒。");
                 return;
             }
 
-            debugLog.innerText = "正在請求鏡頭權限...";
-            
+            debugLog.innerText = "正在請求鏡頭...";
             if (currentStream) {
                 currentStream.getTracks().forEach(track => track.stop());
             }
 
+            // 拿掉 width 與 height 的限制，讓手機輸出自然視角，解決放大問題
+            // 後鏡頭使用 { ideal: "environment" } 增加相容性
             const constraints = {
                 video: {
-                    facingMode: useFrontCamera ? "user" : "environment",
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
+                    facingMode: useFrontCamera ? "user" : { ideal: "environment" }
                 },
                 audio: false
             };
@@ -291,30 +305,25 @@
             try {
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = currentStream;
-                
-                // 確保影片播放成功
                 await videoElement.play();
                 
-                statusTextEl.innerText = "鏡頭已啟動！請開始動作";
+                statusTextEl.innerText = "鏡頭已啟動，請全身入鏡";
                 debugLog.innerText = "";
                 startBtn.style.display = "none"; 
                 
-                // 開始影像處理迴圈
                 requestAnimationFrame(processFrame);
                 
             } catch (err) {
-                debugLog.innerText = "錯誤: " + err.message;
-                alert("無法存取鏡頭！請確認您的瀏覽器設定已允許此網頁使用攝影機。");
+                debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
+                alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機，或嘗試切換鏡頭。");
             }
         }
 
-        // 獨立的影像處理迴圈，避免卡死
         async function processFrame() {
             if (!videoElement.paused && !videoElement.ended && !isProcessingFrame) {
                 isProcessingFrame = true;
                 await pose.send({image: videoElement});
             }
-            // 持續呼叫自己，形成迴圈
             requestAnimationFrame(processFrame);
         }
 
@@ -323,15 +332,39 @@
         switchBtn.addEventListener('click', () => {
             useFrontCamera = !useFrontCamera;
             if (currentStream) {
-                startCamera(); // 重新啟動以套用新鏡頭
+                startCamera(); 
+            } else {
+                statusTextEl.innerText = `已切換為${useFrontCamera ? '前' : '後'}鏡頭，請點啟動`;
             }
         });
 
-        // 下載圖片按鈕邏輯
+        // 全螢幕按鈕邏輯
+        fullscreenBtn.addEventListener('click', () => {
+            let elem = document.documentElement;
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                } else if (elem.webkitRequestFullscreen) { /* Safari */
+                    elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) { /* IE11 */
+                    elem.msRequestFullscreen();
+                }
+                fullscreenBtn.innerText = "🔲 退出全螢幕";
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) { /* Safari */
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) { /* IE11 */
+                    document.msExitFullscreen();
+                }
+                fullscreenBtn.innerText = "🔲 全螢幕";
+            }
+        });
+
         downloadBtn.addEventListener('click', () => {
             const link = document.createElement('a');
-            // 設定下載的檔名，包含當時的角度
-            link.download = `kick_angle_${maxAngleEl.innerText}deg.jpg`;
+            link.download = `kick_${maxAngleEl.innerText}deg.jpg`;
             link.href = screenshotImg.src;
             link.click();
         });
