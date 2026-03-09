@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>前踢分腿角度偵測</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow: hidden;
+        }
+        .container {
+            position: relative;
+            width: 100vw;
+            height: 70vh;
+            background-color: black;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        video, canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        canvas {
+            z-index: 10;
+        }
+        .info-panel {
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            text-align: center;
+            background: #2c3e50;
+            height: 30vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .angle-display {
+            font-size: 24px;
+            margin: 10px 0;
+        }
+        .max-angle-display {
+            font-size: 32px;
+            font-weight: bold;
+            color: #f1c40f;
+            margin: 10px 0;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:active {
+            background-color: #c0392b;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <video class="input_video" playsinline style="display:none;"></video>
+        <canvas class="output_canvas"></canvas>
+    </div>
+
+    <div class="info-panel">
+        <div class="angle-display">目前角度: <span id="currentAngle">0</span>°</div>
+        <div class="max-angle-display">最高點最大角度: <span id="maxAngle">0</span>°</div>
+        <button onclick="resetMaxAngle()">重置紀錄</button>
+    </div>
+
+    <script>
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const canvasElement = document.getElementsByClassName('output_canvas')[0];
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const currentAngleEl = document.getElementById('currentAngle');
+        const maxAngleEl = document.getElementById('maxAngle');
+
+        let maxAngle = 0;
+
+        function resetMaxAngle() {
+            maxAngle = 0;
+            maxAngleEl.innerText = "0";
+        }
+
+        // 計算兩個向量之間的夾角
+        function calculateAngle(hip1, ankle1, hip2, ankle2) {
+            // 向量 1 (第一條腿)
+            const dx1 = ankle1.x - hip1.x;
+            const dy1 = ankle1.y - hip1.y;
+            // 向量 2 (第二條腿)
+            const dx2 = ankle2.x - hip2.x;
+            const dy2 = ankle2.y - hip2.y;
+
+            // 內積公式
+            const dotProduct = dx1 * dx2 + dy1 * dy2;
+            const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+            const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+
+            if (mag1 === 0 || mag2 === 0) return 0;
+
+            let angleRad = Math.acos(dotProduct / (mag1 * mag2));
+            let angleDeg = angleRad * (180 / Math.PI);
+            return angleDeg;
+        }
+
+        function onResults(results) {
+            // 設定畫布尺寸符合影片
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            // 繪製原始影像
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                // 畫出骨架
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+
+                // 取得左右臀部與左右腳踝的座標
+                const landmarks = results.poseLandmarks;
+                const leftHip = landmarks[23];
+                const rightHip = landmarks[24];
+                const leftAnkle = landmarks[27];
+                const rightAnkle = landmarks[28];
+
+                // 確認這四個點的辨識信心度足夠 (visibility > 0.5)
+                if (leftHip.visibility > 0.5 && rightHip.visibility > 0.5 && 
+                    leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5) {
+                    
+                    // 計算兩腿向量的夾角
+                    let angle = calculateAngle(leftHip, leftAnkle, rightHip, rightAnkle);
+                    angle = Math.round(angle);
+
+                    currentAngleEl.innerText = angle;
+
+                    // 記錄最大角度（即踢擊最高點）
+                    if (angle > maxAngle) {
+                        maxAngle = angle;
+                        maxAngleEl.innerText = maxAngle;
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+        pose.setOptions({
+            modelComplexity: 1, // 1 對於手機效能與準確度的平衡最好
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        pose.onResults(onResults);
+
+        // 啟動手機後置鏡頭 (environment)
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({image: videoElement});
+            },
+            width: 640,
+            height: 480,
+            facingMode: 'environment' // 使用手機背面鏡頭
+        });
+        camera.start();
+    </script>
+</body>
+</html>
