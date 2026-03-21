@@ -83,6 +83,18 @@
 
         button:active { background-color: #2980b9; transform: translateY(2px); }
         
+        /* 變焦滑桿區塊 */
+        .zoom-container {
+            display: none; /* 預設隱藏，抓到鏡頭支援才顯示 */
+            margin: 10px auto 0;
+            width: 80%;
+            max-width: 300px;
+        }
+        .zoom-container input[type=range] {
+            width: 100%;
+            margin-top: 5px;
+        }
+
         #downloadBtn {
             background-color: #e67e22;
             display: none;
@@ -112,13 +124,13 @@
             border-radius: 8px;
             display: none;
             position: absolute;
-            bottom: 120px;
+            bottom: 130px;
             right: 15px;
             z-index: 30;
             box-shadow: 0 4px 10px rgba(0,0,0,0.8);
         }
 
-        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; }
+        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; word-wrap: break-word; }
     </style>
 </head>
 <body>
@@ -133,8 +145,14 @@
         <div class="top-panel">
             <div class="controls">
                 <button id="startBtn">啟動鏡頭</button>
-                <button id="switchBtn">切換鏡頭</button>
+                <button id="switchBtn">切換前後鏡頭</button>
             </div>
+            
+            <div class="zoom-container" id="zoomContainer">
+                <label for="zoomSlider">🔍 調整鏡頭遠近：</label>
+                <input type="range" id="zoomSlider" min="1" max="3" step="0.1" value="1">
+            </div>
+
             <div class="status-display" id="statusText">等待啟動...</div>
             <div id="debugLog"></div>
         </div>
@@ -164,10 +182,12 @@
         const startBtn = document.getElementById('startBtn');
         const switchBtn = document.getElementById('switchBtn');
         const downloadBtn = document.getElementById('downloadBtn');
+        const zoomContainer = document.getElementById('zoomContainer');
+        const zoomSlider = document.getElementById('zoomSlider');
 
         let isKicking = false;
         let currentMaxAngle = 0;
-        let useFrontCamera = false; // 預設使用後鏡頭
+        let useFrontCamera = false; 
         let currentStream = null;
         let poseLoaded = false;
         let isProcessingFrame = false; 
@@ -262,7 +282,6 @@
                             statusTextEl.style.color = "#2ecc71"; 
                             
                             maxAngleEl.innerText = currentMaxAngle;
-                            
                             screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
                             downloadBtn.style.display = "block"; 
@@ -276,6 +295,13 @@
             isProcessingFrame = false; 
         }
 
+        // 停止目前的攝影機串流
+        function stopMediaTracks(stream) {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        }
+
         async function startCamera() {
             if (!poseLoaded) {
                 alert("AI 尚未準備好，請稍等幾秒。");
@@ -283,19 +309,21 @@
             }
 
             debugLog.innerText = "正在請求鏡頭...";
+            zoomContainer.style.display = "none"; // 先隱藏變焦桿
             
-            // 徹底關閉並清空先前的鏡頭連線，避免切換時當機
             if (currentStream) {
-                currentStream.getTracks().forEach(track => track.stop());
+                stopMediaTracks(currentStream);
                 videoElement.srcObject = null; 
+                // 給硬體 200毫秒 的時間釋放鏡頭，避免切換時卡死
+                await new Promise(resolve => setTimeout(resolve, 200));
             }
 
-            // 要求高解析度 (1080p) 以強制手機使用廣角，避免 Zoom-in 裁切
+            // 放寬解析度限制，改用 ideal (理想值)，讓前鏡頭不會因為不支援 1080p 而報錯
             const constraints = {
                 video: {
                     facingMode: useFrontCamera ? "user" : "environment",
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 }
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
                 },
                 audio: false
             };
@@ -309,11 +337,32 @@
                 debugLog.innerText = "";
                 startBtn.style.display = "none"; 
                 
+                // --- 設定硬體變焦 (Zoom) ---
+                try {
+                    const track = currentStream.getVideoTracks()[0];
+                    const capabilities = track.getCapabilities();
+                    const settings = track.getSettings();
+                    
+                    if (capabilities && capabilities.zoom) {
+                        zoomSlider.min = capabilities.zoom.min;
+                        zoomSlider.max = capabilities.zoom.max;
+                        zoomSlider.step = capabilities.zoom.step;
+                        zoomSlider.value = settings.zoom || capabilities.zoom.min;
+                        zoomContainer.style.display = "block"; // 顯示滑桿
+
+                        zoomSlider.oninput = (e) => {
+                            track.applyConstraints({ advanced: [{ zoom: parseFloat(e.target.value) }] });
+                        };
+                    }
+                } catch (err) {
+                    console.log("此設備/瀏覽器不支援 WebRTC 變焦 API", err);
+                }
+                
                 requestAnimationFrame(processFrame);
                 
             } catch (err) {
                 debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
-                alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機。");
+                alert("無法存取鏡頭！請確認您的瀏覽器已允許使用相機。");
             }
         }
 
@@ -327,11 +376,10 @@
 
         startBtn.addEventListener('click', startCamera);
 
-        // 切換鏡頭邏輯優化
         switchBtn.addEventListener('click', async () => {
             useFrontCamera = !useFrontCamera;
             if (currentStream) {
-                // 如果原本已經在錄影，點擊切換就重新執行 startCamera
+                statusTextEl.innerText = "切換中...";
                 await startCamera(); 
             } else {
                 statusTextEl.innerText = `已切換為${useFrontCamera ? '前' : '後'}鏡頭，請點啟動`;
