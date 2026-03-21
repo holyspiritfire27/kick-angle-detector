@@ -19,6 +19,7 @@
             overflow: hidden; 
         }
 
+        /* 鏡頭與畫布容器 (用於軟體縮放) */
         .camera-container {
             position: absolute;
             top: 0;
@@ -26,9 +27,10 @@
             width: 100vw;
             height: 100vh;
             z-index: 1;
+            transform-origin: center center;
+            transition: transform 0.1s ease-out; /* 縮放平滑過渡 */
         }
 
-        /* contain 確保畫面比例正確，不被裁切 */
         video, .output_canvas {
             position: absolute;
             top: 0;
@@ -67,7 +69,6 @@
             justify-content: center;
             gap: 15px;
             margin-bottom: 10px;
-            flex-wrap: wrap;
         }
 
         button {
@@ -80,11 +81,22 @@
             cursor: pointer;
             box-shadow: 0 4px 6px rgba(0,0,0,0.5);
             font-weight: bold;
-            min-width: 120px;
         }
 
         button:active { background-color: #2980b9; transform: translateY(2px); }
         
+        /* 變焦滑桿區塊 (改為預設顯示，使用軟體縮放) */
+        .zoom-container {
+            margin: 10px auto 0;
+            width: 80%;
+            max-width: 300px;
+            display: none; /* 啟動後顯示 */
+        }
+        .zoom-container input[type=range] {
+            width: 100%;
+            margin-top: 5px;
+        }
+
         #downloadBtn {
             background-color: #e67e22;
             display: none;
@@ -114,65 +126,18 @@
             border-radius: 8px;
             display: none;
             position: absolute;
-            bottom: 120px;
+            bottom: 130px;
             right: 15px;
             z-index: 30;
             box-shadow: 0 4px 10px rgba(0,0,0,0.8);
         }
 
-        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; }
-        
-        /* 新增縮放控制區域 */
-        .zoom-controls {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 10px;
-            margin: 10px 0;
-        }
-        
-        .zoom-btn {
-            padding: 8px 15px;
-            font-size: 20px;
-            width: 50px;
-            height: 50px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        #zoomLevel {
-            font-size: 18px;
-            min-width: 60px;
-        }
-        
-        /* 適配手機按鈕大小 */
-        @media (max-width: 480px) {
-            button {
-                padding: 10px 15px;
-                font-size: 14px;
-                min-width: 100px;
-            }
-            
-            .zoom-btn {
-                width: 40px;
-                height: 40px;
-                font-size: 18px;
-            }
-            
-            .angle-info {
-                font-size: 20px;
-            }
-            
-            #maxAngle {
-                font-size: 28px;
-            }
-        }
+        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; word-wrap: break-word; }
     </style>
 </head>
 <body>
 
-    <div class="camera-container">
+    <div class="camera-container" id="cameraContainer">
         <video id="videoElement" playsinline autoplay muted style="display:none;"></video>
         <canvas class="output_canvas"></canvas>
         <canvas id="buffer_canvas" style="display:none;"></canvas>
@@ -184,12 +149,12 @@
                 <button id="startBtn">啟動鏡頭</button>
                 <button id="switchBtn">切換鏡頭</button>
             </div>
-            <!-- 新增縮放控制按鈕 -->
-            <div class="zoom-controls">
-                <button class="zoom-btn" id="zoomOutBtn">-</button>
-                <span id="zoomLevel">1.0x</span>
-                <button class="zoom-btn" id="zoomInBtn">+</button>
+            
+            <div class="zoom-container" id="zoomContainer">
+                <label for="zoomSlider">🔍 調整畫面遠近：</label>
+                <input type="range" id="zoomSlider" min="0.7" max="3" step="0.1" value="1">
             </div>
+
             <div class="status-display" id="statusText">等待啟動...</div>
             <div id="debugLog"></div>
         </div>
@@ -209,30 +174,32 @@
         const canvasCtx = canvasElement.getContext('2d');
         const bufferCanvas = document.getElementById('buffer_canvas');
         const bufferCtx = bufferCanvas.getContext('2d');
+        const cameraContainer = document.getElementById('cameraContainer');
 
         const currentAngleEl = document.getElementById('currentAngle');
         const statusTextEl = document.getElementById('statusText');
         const maxAngleEl = document.getElementById('maxAngle');
         const screenshotImg = document.getElementById('screenshotImg');
         const debugLog = document.getElementById('debugLog');
-        const zoomLevelEl = document.getElementById('zoomLevel');
         
         const startBtn = document.getElementById('startBtn');
         const switchBtn = document.getElementById('switchBtn');
-        const zoomInBtn = document.getElementById('zoomInBtn');
-        const zoomOutBtn = document.getElementById('zoomOutBtn');
         const downloadBtn = document.getElementById('downloadBtn');
+        const zoomContainer = document.getElementById('zoomContainer');
+        const zoomSlider = document.getElementById('zoomSlider');
 
         let isKicking = false;
         let currentMaxAngle = 0;
-        let useFrontCamera = false; // 預設使用後鏡頭
+        let useFrontCamera = false; 
         let currentStream = null;
         let poseLoaded = false;
-        let isProcessingFrame = false;
-        let currentZoomLevel = 1.0; // 預設縮放倍數
-        const MIN_ZOOM = 0.5; // 最小縮放 (更廣角)
-        const MAX_ZOOM = 3.0; // 最大縮放
-        const ZOOM_STEP = 0.1; // 每次調整步數
+        let isProcessingFrame = false; 
+
+        // 鏡頭陣列與索引
+        let videoDevices = [];
+        let currentDeviceIndex = 0;
+        let currentZoomLevel = 1.0;
+        const MIN_ZOOM = 0.7; // 軟體廣角
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
@@ -279,22 +246,17 @@
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
+            // 若為前鏡頭則左右翻轉
             if (useFrontCamera) {
                 canvasCtx.translate(canvasElement.width, 0);
                 canvasCtx.scale(-1, 1);
             }
             
-            // 應用縮放效果
-            canvasCtx.translate(canvasElement.width / 2, canvasElement.height / 2);
-            canvasCtx.scale(currentZoomLevel, currentZoomLevel);
-            canvasCtx.translate(-canvasElement.width / 2, -canvasElement.height / 2);
-            
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
             if (results.poseLandmarks) {
-                // 繪製骨架時也要考慮縮放
-                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4 / currentZoomLevel});
-                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2 / currentZoomLevel});
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
 
                 const landmarks = results.poseLandmarks;
                 const leftHip = landmarks[23];
@@ -316,32 +278,20 @@
                         downloadBtn.style.display = "none";
                         screenshotImg.style.display = "none";
                         
-                        bufferCtx.save();
                         bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
-                        // 緩存畫布也應用相同縮放
-                        bufferCtx.translate(bufferCanvas.width / 2, bufferCanvas.height / 2);
-                        bufferCtx.scale(currentZoomLevel, currentZoomLevel);
-                        bufferCtx.translate(-bufferCanvas.width / 2, -bufferCanvas.height / 2);
                         bufferCtx.drawImage(canvasElement, 0, 0);
-                        bufferCtx.restore();
 
                     } else if (isKicking) {
                         if (angle > currentMaxAngle) {
                             currentMaxAngle = angle;
-                            bufferCtx.save();
                             bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
-                            bufferCtx.translate(bufferCanvas.width / 2, bufferCanvas.height / 2);
-                            bufferCtx.scale(currentZoomLevel, currentZoomLevel);
-                            bufferCtx.translate(-bufferCanvas.width / 2, -bufferCanvas.height / 2);
                             bufferCtx.drawImage(canvasElement, 0, 0);
-                            bufferCtx.restore();
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
                             isKicking = false;
                             statusTextEl.innerText = "完成！可進行下一次";
                             statusTextEl.style.color = "#2ecc71"; 
                             
                             maxAngleEl.innerText = currentMaxAngle;
-                            
                             screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
                             downloadBtn.style.display = "block"; 
@@ -355,19 +305,41 @@
             isProcessingFrame = false; 
         }
 
-        // 更新縮放顯示
-        function updateZoomDisplay() {
-            zoomLevelEl.textContent = `${currentZoomLevel.toFixed(1)}x`;
+        // 停止目前的攝影機串流
+        function stopMediaTracks(stream) {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
         }
 
-        // 調整鏡頭縮放 (軟體縮放，兼容所有裝置)
-        function adjustZoom(direction) {
-            if (direction === 'in') {
-                currentZoomLevel = Math.min(currentZoomLevel + ZOOM_STEP, MAX_ZOOM);
-            } else {
-                currentZoomLevel = Math.max(currentZoomLevel - ZOOM_STEP, MIN_ZOOM);
+        // 取得設備所有鏡頭並過濾
+        async function getCameras() {
+            try {
+                // 先隨機請求一次權限，確保能拿到帶有 label 的完整設備清單 (iOS/Android 必備技巧)
+                if (videoDevices.length === 0) {
+                    const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    stopMediaTracks(tempStream);
+                }
+
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                videoDevices = devices.filter(d => d.kind === 'videoinput');
+                
+                debugLog.innerText = `找到 ${videoDevices.length} 顆鏡頭`;
+                console.log("所有鏡頭:", videoDevices);
+
+                // 優先找「後置 / 廣角 / 標準鏡頭」，避開 tele(長焦) / zoom
+                const preferred = videoDevices.findIndex(d => {
+                    const label = d.label.toLowerCase();
+                    return (label.includes('back') || label.includes('rear') || label.includes('environment')) &&
+                           !label.includes('tele') &&
+                           !label.includes('zoom');
+                });
+
+                currentDeviceIndex = preferred !== -1 ? preferred : 0;
+            } catch (err) {
+                console.error("獲取鏡頭列表失敗:", err);
+                debugLog.innerText = "獲取鏡頭列表失敗";
             }
-            updateZoomDisplay();
         }
 
         async function startCamera() {
@@ -376,26 +348,26 @@
                 return;
             }
 
-            debugLog.innerText = "正在請求鏡頭...";
+            statusTextEl.innerText = "正在啟動鏡頭...";
             
-            // 徹底關閉並清空先前的鏡頭連線，避免切換時當機
             if (currentStream) {
-                currentStream.getTracks().forEach(track => track.stop());
+                stopMediaTracks(currentStream);
                 videoElement.srcObject = null; 
+                await new Promise(resolve => setTimeout(resolve, 200));
             }
 
-            // 調整鏡頭解析度，避免過度放大
+            // 判斷當前選擇的鏡頭是否為前鏡頭 (為了鏡像翻轉)
+            if (videoDevices[currentDeviceIndex]) {
+                const label = videoDevices[currentDeviceIndex].label.toLowerCase();
+                useFrontCamera = label.includes('front') || label.includes('user') || label.includes('selfie');
+            }
+
+            // 使用精準的 deviceId 呼叫，不再依賴 facingMode
             const constraints = {
                 video: {
-                    facingMode: useFrontCamera ? "user" : "environment",
-                    width: { ideal: 640, max: 1280 },
-                    height: { ideal: 480, max: 720 },
-                    // 避免系統自動放大，要求最廣角
-                    zoom: { ideal: 1.0 },
-                    // 要求最廣角的視野
-                    fieldOfView: { ideal: 90 },
-                    // 要求使用主鏡頭而非變焦鏡頭
-                    deviceId: { exact: undefined }
+                    deviceId: videoDevices[currentDeviceIndex] ? { exact: videoDevices[currentDeviceIndex].deviceId } : undefined,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
                 },
                 audio: false
             };
@@ -403,50 +375,17 @@
             try {
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = currentStream;
-                
-                // 檢查是否支援相機控制
-                const videoTrack = currentStream.getVideoTracks()[0];
-                const capabilities = videoTrack.getCapabilities();
-                
-                debugLog.innerText = "支援功能: " + Object.keys(capabilities).join(', ');
-                
-                // 重置為最廣角 (軟體縮放)
-                currentZoomLevel = MIN_ZOOM;
-                updateZoomDisplay();
-                
-                // 檢查是否支援硬體縮放
-                if (capabilities.zoom) {
-                    debugLog.innerText += " (支援硬體縮放)";
-                    // 嘗試設置為最廣角
-                    try {
-                        await videoTrack.applyConstraints({
-                            advanced: [{ zoom: capabilities.zoom.min || 1.0 }]
-                        });
-                        currentZoomLevel = capabilities.zoom.min || 1.0;
-                    } catch (err) {
-                        debugLog.innerText += " (硬體縮放失敗，使用軟體縮放)";
-                    }
-                }
-                
                 await videoElement.play();
                 
                 statusTextEl.innerText = `已啟動 (${useFrontCamera ? '前' : '後'}鏡頭)`;
-                debugLog.innerText = "";
                 startBtn.style.display = "none"; 
-                updateZoomDisplay();
+                zoomContainer.style.display = "block"; // 顯示軟體變焦滑桿
                 
                 requestAnimationFrame(processFrame);
                 
             } catch (err) {
                 debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
-                alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機。");
-                
-                // 如果後鏡頭開啟失敗，自動切換到前鏡頭
-                if (!useFrontCamera && err.name === 'NotAllowedError') {
-                    useFrontCamera = true;
-                    statusTextEl.innerText = "後鏡頭開啟失敗，請改用前鏡頭";
-                    debugLog.innerText += " (建議使用前鏡頭)";
-                }
+                alert("無法存取此鏡頭！請嘗試點擊切換鏡頭。");
             }
         }
 
@@ -458,58 +397,39 @@
             requestAnimationFrame(processFrame);
         }
 
-        // 初始化事件監聽
-        startBtn.addEventListener('click', startCamera);
+        // 綁定事件：啟動前先抓鏡頭列表
+        startBtn.addEventListener('click', async () => {
+            await getCameras();
+            startCamera();
+        });
 
-        // 改進的鏡頭切換邏輯
+        // 綁定事件：依序切換可用鏡頭
         switchBtn.addEventListener('click', async () => {
-            useFrontCamera = !useFrontCamera;
-            statusTextEl.innerText = `切換為${useFrontCamera ? '前' : '後'}鏡頭中...`;
-            
-            // 不論是否已啟動，都重新初始化相機
-            try {
+            if (videoDevices.length === 0) {
+                await getCameras();
+            }
+
+            if (videoDevices.length > 1) {
+                currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+                statusTextEl.innerText = "切換鏡頭中...";
                 await startCamera();
-            } catch (err) {
-                statusTextEl.innerText = `切換失敗，請手動點擊啟動`;
-                debugLog.innerText = "切換錯誤: " + err.message;
+            } else {
+                alert("找不到其他鏡頭可供切換");
             }
         });
 
-        // 初始化縮放按鈕 (預設軟體縮放)
-        zoomInBtn.addEventListener('click', () => adjustZoom('in'));
-        zoomOutBtn.addEventListener('click', () => adjustZoom('out'));
+        // 軟體縮放事件綁定 (透過 CSS Transform 達成偽廣角與變焦)
+        zoomSlider.addEventListener('input', (e) => {
+            currentZoomLevel = parseFloat(e.target.value);
+            // 套用縮放到整個容器，這樣原始影像與 AI 骨架線條會等比例完美縮放
+            cameraContainer.style.transform = `scale(${currentZoomLevel})`;
+        });
 
         downloadBtn.addEventListener('click', () => {
             const link = document.createElement('a');
-            link.download = `kick_${maxAngleEl.innerText}deg_${currentZoomLevel.toFixed(1)}x.jpg`;
+            link.download = `kick_${maxAngleEl.innerText}deg.jpg`;
             link.href = screenshotImg.src;
             link.click();
-        });
-
-        // 處理頁面隱藏/顯示事件，避免鏡頭中斷
-        document.addEventListener('visibilitychange', async () => {
-            if (document.hidden) {
-                // 頁面隱藏時停止處理
-                isProcessingFrame = true;
-            } else if (currentStream && !videoElement.paused) {
-                // 頁面恢復時重新啟動處理
-                isProcessingFrame = false;
-            }
-        });
-
-        // 頁面加載完成後，立即檢查相機權限
-        window.addEventListener('load', async () => {
-            try {
-                const permissions = await navigator.permissions.query({name: 'camera'});
-                if (permissions.state === 'granted') {
-                    statusTextEl.innerText = "相機權限已獲得，點擊啟動";
-                } else if (permissions.state === 'denied') {
-                    statusTextEl.innerText = "相機權限被拒絕，請開啟權限";
-                    statusTextEl.style.color = "#e74c3c";
-                }
-            } catch (err) {
-                // 某些瀏覽器不支援 permissions API
-            }
         });
 
     </script>
