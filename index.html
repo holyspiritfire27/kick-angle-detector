@@ -67,6 +67,7 @@
             justify-content: center;
             gap: 15px;
             margin-bottom: 10px;
+            flex-wrap: wrap;
         }
 
         button {
@@ -79,22 +80,11 @@
             cursor: pointer;
             box-shadow: 0 4px 6px rgba(0,0,0,0.5);
             font-weight: bold;
+            min-width: 120px;
         }
 
         button:active { background-color: #2980b9; transform: translateY(2px); }
         
-        /* 變焦滑桿區塊 */
-        .zoom-container {
-            display: none; /* 預設隱藏，抓到鏡頭支援才顯示 */
-            margin: 10px auto 0;
-            width: 80%;
-            max-width: 300px;
-        }
-        .zoom-container input[type=range] {
-            width: 100%;
-            margin-top: 5px;
-        }
-
         #downloadBtn {
             background-color: #e67e22;
             display: none;
@@ -124,13 +114,60 @@
             border-radius: 8px;
             display: none;
             position: absolute;
-            bottom: 130px;
+            bottom: 120px;
             right: 15px;
             z-index: 30;
             box-shadow: 0 4px 10px rgba(0,0,0,0.8);
         }
 
-        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; word-wrap: break-word; }
+        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; }
+        
+        /* 新增縮放控制區域 */
+        .zoom-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        
+        .zoom-btn {
+            padding: 8px 15px;
+            font-size: 20px;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #zoomLevel {
+            font-size: 18px;
+            min-width: 60px;
+        }
+        
+        /* 適配手機按鈕大小 */
+        @media (max-width: 480px) {
+            button {
+                padding: 10px 15px;
+                font-size: 14px;
+                min-width: 100px;
+            }
+            
+            .zoom-btn {
+                width: 40px;
+                height: 40px;
+                font-size: 18px;
+            }
+            
+            .angle-info {
+                font-size: 20px;
+            }
+            
+            #maxAngle {
+                font-size: 28px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -145,14 +182,14 @@
         <div class="top-panel">
             <div class="controls">
                 <button id="startBtn">啟動鏡頭</button>
-                <button id="switchBtn">切換前後鏡頭</button>
+                <button id="switchBtn">切換鏡頭</button>
             </div>
-            
-            <div class="zoom-container" id="zoomContainer">
-                <label for="zoomSlider">🔍 調整鏡頭遠近：</label>
-                <input type="range" id="zoomSlider" min="1" max="3" step="0.1" value="1">
+            <!-- 新增縮放控制按鈕 -->
+            <div class="zoom-controls">
+                <button class="zoom-btn" id="zoomOutBtn">-</button>
+                <span id="zoomLevel">1.0x</span>
+                <button class="zoom-btn" id="zoomInBtn">+</button>
             </div>
-
             <div class="status-display" id="statusText">等待啟動...</div>
             <div id="debugLog"></div>
         </div>
@@ -178,19 +215,24 @@
         const maxAngleEl = document.getElementById('maxAngle');
         const screenshotImg = document.getElementById('screenshotImg');
         const debugLog = document.getElementById('debugLog');
+        const zoomLevelEl = document.getElementById('zoomLevel');
         
         const startBtn = document.getElementById('startBtn');
         const switchBtn = document.getElementById('switchBtn');
+        const zoomInBtn = document.getElementById('zoomInBtn');
+        const zoomOutBtn = document.getElementById('zoomOutBtn');
         const downloadBtn = document.getElementById('downloadBtn');
-        const zoomContainer = document.getElementById('zoomContainer');
-        const zoomSlider = document.getElementById('zoomSlider');
 
         let isKicking = false;
         let currentMaxAngle = 0;
-        let useFrontCamera = false; 
+        let useFrontCamera = false; // 預設使用後鏡頭
         let currentStream = null;
         let poseLoaded = false;
-        let isProcessingFrame = false; 
+        let isProcessingFrame = false;
+        let currentZoomLevel = 1.0; // 預設縮放倍數
+        const MIN_ZOOM = 1.0; // 最小縮放 (原尺寸)
+        const MAX_ZOOM = 3.0; // 最大縮放
+        const ZOOM_STEP = 0.1; // 每次調整步數
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
@@ -242,11 +284,17 @@
                 canvasCtx.scale(-1, 1);
             }
             
+            // 應用縮放效果
+            canvasCtx.translate(canvasElement.width / 2, canvasElement.height / 2);
+            canvasCtx.scale(currentZoomLevel, currentZoomLevel);
+            canvasCtx.translate(-canvasElement.width / 2, -canvasElement.height / 2);
+            
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
             if (results.poseLandmarks) {
-                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
-                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+                // 繪製骨架時也要考慮縮放
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4 / currentZoomLevel});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2 / currentZoomLevel});
 
                 const landmarks = results.poseLandmarks;
                 const leftHip = landmarks[23];
@@ -268,20 +316,32 @@
                         downloadBtn.style.display = "none";
                         screenshotImg.style.display = "none";
                         
+                        bufferCtx.save();
                         bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+                        // 緩存畫布也應用相同縮放
+                        bufferCtx.translate(bufferCanvas.width / 2, bufferCanvas.height / 2);
+                        bufferCtx.scale(currentZoomLevel, currentZoomLevel);
+                        bufferCtx.translate(-bufferCanvas.width / 2, -bufferCanvas.height / 2);
                         bufferCtx.drawImage(canvasElement, 0, 0);
+                        bufferCtx.restore();
 
                     } else if (isKicking) {
                         if (angle > currentMaxAngle) {
                             currentMaxAngle = angle;
+                            bufferCtx.save();
                             bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+                            bufferCtx.translate(bufferCanvas.width / 2, bufferCanvas.height / 2);
+                            bufferCtx.scale(currentZoomLevel, currentZoomLevel);
+                            bufferCtx.translate(-bufferCanvas.width / 2, -bufferCanvas.height / 2);
                             bufferCtx.drawImage(canvasElement, 0, 0);
+                            bufferCtx.restore();
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
                             isKicking = false;
                             statusTextEl.innerText = "完成！可進行下一次";
                             statusTextEl.style.color = "#2ecc71"; 
                             
                             maxAngleEl.innerText = currentMaxAngle;
+                            
                             screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
                             downloadBtn.style.display = "block"; 
@@ -295,11 +355,19 @@
             isProcessingFrame = false; 
         }
 
-        // 停止目前的攝影機串流
-        function stopMediaTracks(stream) {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
+        // 更新縮放顯示
+        function updateZoomDisplay() {
+            zoomLevelEl.textContent = `${currentZoomLevel.toFixed(1)}x`;
+        }
+
+        // 調整鏡頭縮放 (軟體縮放，兼容所有裝置)
+        function adjustZoom(direction) {
+            if (direction === 'in') {
+                currentZoomLevel = Math.min(currentZoomLevel + ZOOM_STEP, MAX_ZOOM);
+            } else {
+                currentZoomLevel = Math.max(currentZoomLevel - ZOOM_STEP, MIN_ZOOM);
             }
+            updateZoomDisplay();
         }
 
         async function startCamera() {
@@ -309,21 +377,21 @@
             }
 
             debugLog.innerText = "正在請求鏡頭...";
-            zoomContainer.style.display = "none"; // 先隱藏變焦桿
             
+            // 徹底關閉並清空先前的鏡頭連線，避免切換時當機
             if (currentStream) {
-                stopMediaTracks(currentStream);
+                currentStream.getTracks().forEach(track => track.stop());
                 videoElement.srcObject = null; 
-                // 給硬體 200毫秒 的時間釋放鏡頭，避免切換時卡死
-                await new Promise(resolve => setTimeout(resolve, 200));
             }
 
-            // 放寬解析度限制，改用 ideal (理想值)，讓前鏡頭不會因為不支援 1080p 而報錯
+            // 調整鏡頭解析度，避免過度放大
             const constraints = {
                 video: {
                     facingMode: useFrontCamera ? "user" : "environment",
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
+                    width: { ideal: 1280, max: 1920 },
+                    height: { ideal: 720, max: 1080 },
+                    // 避免系統自動放大
+                    zoom: { ideal: 1.0 }
                 },
                 audio: false
             };
@@ -331,38 +399,54 @@
             try {
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = currentStream;
+                
+                // 嘗試使用硬體縮放 (部分裝置支援)
+                const videoTrack = currentStream.getVideoTracks()[0];
+                const capabilities = videoTrack.getCapabilities();
+                
+                // 如果裝置支援硬體縮放，使用硬體縮放
+                if (capabilities.zoom) {
+                    const settings = videoTrack.getSettings();
+                    currentZoomLevel = settings.zoom || 1.0;
+                    
+                    // 重新綁定縮放按鈕為硬體縮放
+                    zoomInBtn.onclick = () => {
+                        const newZoom = Math.min(currentZoomLevel + ZOOM_STEP, capabilities.zoom.max);
+                        videoTrack.applyConstraints({ advanced: [{ zoom: newZoom }] })
+                            .then(() => {
+                                currentZoomLevel = newZoom;
+                                updateZoomDisplay();
+                            })
+                            .catch(err => {
+                                adjustZoom('in'); // 失敗則使用軟體縮放
+                            });
+                    };
+                    
+                    zoomOutBtn.onclick = () => {
+                        const newZoom = Math.max(currentZoomLevel - ZOOM_STEP, capabilities.zoom.min);
+                        videoTrack.applyConstraints({ advanced: [{ zoom: newZoom }] })
+                            .then(() => {
+                                currentZoomLevel = newZoom;
+                                updateZoomDisplay();
+                            })
+                            .catch(err => {
+                                adjustZoom('out'); // 失敗則使用軟體縮放
+                            });
+                    };
+                }
+                
                 await videoElement.play();
                 
                 statusTextEl.innerText = `已啟動 (${useFrontCamera ? '前' : '後'}鏡頭)`;
                 debugLog.innerText = "";
                 startBtn.style.display = "none"; 
-                
-                // --- 設定硬體變焦 (Zoom) ---
-                try {
-                    const track = currentStream.getVideoTracks()[0];
-                    const capabilities = track.getCapabilities();
-                    const settings = track.getSettings();
-                    
-                    if (capabilities && capabilities.zoom) {
-                        zoomSlider.min = capabilities.zoom.min;
-                        zoomSlider.max = capabilities.zoom.max;
-                        zoomSlider.step = capabilities.zoom.step;
-                        zoomSlider.value = settings.zoom || capabilities.zoom.min;
-                        zoomContainer.style.display = "block"; // 顯示滑桿
-
-                        zoomSlider.oninput = (e) => {
-                            track.applyConstraints({ advanced: [{ zoom: parseFloat(e.target.value) }] });
-                        };
-                    }
-                } catch (err) {
-                    console.log("此設備/瀏覽器不支援 WebRTC 變焦 API", err);
-                }
+                updateZoomDisplay();
                 
                 requestAnimationFrame(processFrame);
                 
             } catch (err) {
                 debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
-                alert("無法存取鏡頭！請確認您的瀏覽器已允許使用相機。");
+                alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機。");
             }
         }
 
@@ -374,23 +458,43 @@
             requestAnimationFrame(processFrame);
         }
 
+        // 初始化事件監聽
         startBtn.addEventListener('click', startCamera);
 
+        // 改進的鏡頭切換邏輯
         switchBtn.addEventListener('click', async () => {
             useFrontCamera = !useFrontCamera;
-            if (currentStream) {
-                statusTextEl.innerText = "切換中...";
-                await startCamera(); 
-            } else {
-                statusTextEl.innerText = `已切換為${useFrontCamera ? '前' : '後'}鏡頭，請點啟動`;
+            statusTextEl.innerText = `切換為${useFrontCamera ? '前' : '後'}鏡頭中...`;
+            
+            // 不論是否已啟動，都重新初始化相機
+            try {
+                await startCamera();
+            } catch (err) {
+                statusTextEl.innerText = `切換失敗，請手動點擊啟動`;
+                debugLog.innerText = "切換錯誤: " + err.message;
             }
         });
 
+        // 初始化縮放按鈕 (預設軟體縮放)
+        zoomInBtn.addEventListener('click', () => adjustZoom('in'));
+        zoomOutBtn.addEventListener('click', () => adjustZoom('out'));
+
         downloadBtn.addEventListener('click', () => {
             const link = document.createElement('a');
-            link.download = `kick_${maxAngleEl.innerText}deg.jpg`;
+            link.download = `kick_${maxAngleEl.innerText}deg_${currentZoomLevel.toFixed(1)}x.jpg`;
             link.href = screenshotImg.src;
             link.click();
+        });
+
+        // 處理頁面隱藏/顯示事件，避免鏡頭中斷
+        document.addEventListener('visibilitychange', async () => {
+            if (document.hidden) {
+                // 頁面隱藏時停止處理
+                isProcessingFrame = true;
+            } else if (currentStream && !videoElement.paused) {
+                // 頁面恢復時重新啟動處理
+                isProcessingFrame = false;
+            }
         });
 
     </script>
