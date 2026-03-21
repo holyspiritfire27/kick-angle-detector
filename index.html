@@ -230,7 +230,7 @@
         let poseLoaded = false;
         let isProcessingFrame = false;
         let currentZoomLevel = 1.0; // 預設縮放倍數
-        const MIN_ZOOM = 1.0; // 最小縮放 (原尺寸)
+        const MIN_ZOOM = 0.5; // 最小縮放 (更廣角)
         const MAX_ZOOM = 3.0; // 最大縮放
         const ZOOM_STEP = 0.1; // 每次調整步數
         
@@ -388,10 +388,14 @@
             const constraints = {
                 video: {
                     facingMode: useFrontCamera ? "user" : "environment",
-                    width: { ideal: 1280, max: 1920 },
-                    height: { ideal: 720, max: 1080 },
-                    // 避免系統自動放大
-                    zoom: { ideal: 1.0 }
+                    width: { ideal: 640, max: 1280 },
+                    height: { ideal: 480, max: 720 },
+                    // 避免系統自動放大，要求最廣角
+                    zoom: { ideal: 1.0 },
+                    // 要求最廣角的視野
+                    fieldOfView: { ideal: 90 },
+                    // 要求使用主鏡頭而非變焦鏡頭
+                    deviceId: { exact: undefined }
                 },
                 audio: false
             };
@@ -400,39 +404,28 @@
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = currentStream;
                 
-                // 嘗試使用硬體縮放 (部分裝置支援)
+                // 檢查是否支援相機控制
                 const videoTrack = currentStream.getVideoTracks()[0];
                 const capabilities = videoTrack.getCapabilities();
                 
-                // 如果裝置支援硬體縮放，使用硬體縮放
+                debugLog.innerText = "支援功能: " + Object.keys(capabilities).join(', ');
+                
+                // 重置為最廣角 (軟體縮放)
+                currentZoomLevel = MIN_ZOOM;
+                updateZoomDisplay();
+                
+                // 檢查是否支援硬體縮放
                 if (capabilities.zoom) {
-                    const settings = videoTrack.getSettings();
-                    currentZoomLevel = settings.zoom || 1.0;
-                    
-                    // 重新綁定縮放按鈕為硬體縮放
-                    zoomInBtn.onclick = () => {
-                        const newZoom = Math.min(currentZoomLevel + ZOOM_STEP, capabilities.zoom.max);
-                        videoTrack.applyConstraints({ advanced: [{ zoom: newZoom }] })
-                            .then(() => {
-                                currentZoomLevel = newZoom;
-                                updateZoomDisplay();
-                            })
-                            .catch(err => {
-                                adjustZoom('in'); // 失敗則使用軟體縮放
-                            });
-                    };
-                    
-                    zoomOutBtn.onclick = () => {
-                        const newZoom = Math.max(currentZoomLevel - ZOOM_STEP, capabilities.zoom.min);
-                        videoTrack.applyConstraints({ advanced: [{ zoom: newZoom }] })
-                            .then(() => {
-                                currentZoomLevel = newZoom;
-                                updateZoomDisplay();
-                            })
-                            .catch(err => {
-                                adjustZoom('out'); // 失敗則使用軟體縮放
-                            });
-                    };
+                    debugLog.innerText += " (支援硬體縮放)";
+                    // 嘗試設置為最廣角
+                    try {
+                        await videoTrack.applyConstraints({
+                            advanced: [{ zoom: capabilities.zoom.min || 1.0 }]
+                        });
+                        currentZoomLevel = capabilities.zoom.min || 1.0;
+                    } catch (err) {
+                        debugLog.innerText += " (硬體縮放失敗，使用軟體縮放)";
+                    }
                 }
                 
                 await videoElement.play();
@@ -447,6 +440,13 @@
             } catch (err) {
                 debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
                 alert("無法存取鏡頭！錯誤代碼：" + err.name + "。請確認您未在其他APP開啟相機。");
+                
+                // 如果後鏡頭開啟失敗，自動切換到前鏡頭
+                if (!useFrontCamera && err.name === 'NotAllowedError') {
+                    useFrontCamera = true;
+                    statusTextEl.innerText = "後鏡頭開啟失敗，請改用前鏡頭";
+                    debugLog.innerText += " (建議使用前鏡頭)";
+                }
             }
         }
 
@@ -494,6 +494,21 @@
             } else if (currentStream && !videoElement.paused) {
                 // 頁面恢復時重新啟動處理
                 isProcessingFrame = false;
+            }
+        });
+
+        // 頁面加載完成後，立即檢查相機權限
+        window.addEventListener('load', async () => {
+            try {
+                const permissions = await navigator.permissions.query({name: 'camera'});
+                if (permissions.state === 'granted') {
+                    statusTextEl.innerText = "相機權限已獲得，點擊啟動";
+                } else if (permissions.state === 'denied') {
+                    statusTextEl.innerText = "相機權限被拒絕，請開啟權限";
+                    statusTextEl.style.color = "#e74c3c";
+                }
+            } catch (err) {
+                // 某些瀏覽器不支援 permissions API
             }
         });
 
