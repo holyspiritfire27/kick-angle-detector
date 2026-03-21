@@ -3,12 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (究極版)</title>
+    <title>前踢動作分析系統 (精準計算版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
     <style>
-        /* 基礎全螢幕設定 */
         html, body {
             margin: 0;
             padding: 0;
@@ -18,7 +17,6 @@
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             overflow: hidden; 
         }
-
         .camera-container {
             position: absolute;
             top: 0;
@@ -29,8 +27,6 @@
             transform-origin: center center;
             transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
         }
-
-        /* 🔥 關鍵修正：改為 cover，讓畫面裁切填滿，自動拉近受試者 */
         video, .output_canvas {
             position: absolute;
             top: 0;
@@ -39,7 +35,6 @@
             height: 100%;
             object-fit: cover; 
         }
-
         .ui-layer {
             position: absolute;
             top: 0;
@@ -52,7 +47,6 @@
             flex-direction: column;
             justify-content: space-between;
         }
-
         .top-panel, .bottom-panel {
             pointer-events: auto; 
             background: rgba(0, 0, 0, 0.65);
@@ -64,7 +58,6 @@
             backdrop-filter: blur(8px); 
             -webkit-backdrop-filter: blur(8px);
         }
-
         .controls {
             display: flex;
             justify-content: center;
@@ -73,7 +66,6 @@
             margin-bottom: 10px;
             flex-wrap: wrap;
         }
-
         button {
             padding: 12px 20px;
             font-size: 16px;
@@ -86,9 +78,7 @@
             font-weight: bold;
             transition: background 0.2s;
         }
-
         button:active { background-color: #2980b9; transform: translateY(2px); }
-
         select {
             padding: 10px;
             font-size: 16px;
@@ -100,7 +90,6 @@
             max-width: 80%;
             display: none; 
         }
-        
         .zoom-container {
             margin: 10px auto 0;
             width: 80%;
@@ -111,14 +100,12 @@
             width: 100%;
             margin-top: 5px;
         }
-
         #downloadBtn {
             background-color: #e67e22;
             display: none;
             margin: 10px auto 0 auto;
             width: fit-content;
         }
-        
         .status-display {
             font-size: 18px;
             color: #2ecc71;
@@ -126,15 +113,12 @@
             margin-top: 5px;
             min-height: 24px;
         }
-
         .angle-info {
             font-size: 24px;
             font-weight: bold;
         }
-
         #currentAngle { color: white; }
         #maxAngle { color: #f1c40f; font-size: 32px; }
-
         #screenshotImg {
             max-width: 40%;
             max-height: 20vh;
@@ -147,7 +131,6 @@
             z-index: 30;
             box-shadow: 0 4px 10px rgba(0,0,0,0.8);
         }
-
         #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; word-wrap: break-word; }
     </style>
 </head>
@@ -165,16 +148,13 @@
                 <button id="startBtn">啟動鏡頭</button>
                 <select id="cameraSelect"></select>
             </div>
-            
             <div class="zoom-container" id="zoomContainer">
                 <label for="zoomSlider">🔍 調整畫面遠近：</label>
                 <input type="range" id="zoomSlider" min="0.7" max="3" step="0.1" value="1">
             </div>
-
             <div class="status-display" id="statusText">等待啟動...</div>
             <div id="debugLog"></div>
         </div>
-
         <div class="bottom-panel">
             <div class="angle-info">目前角度: <span id="currentAngle">0</span>°</div>
             <div class="angle-info" id="finalAngleText">最高點角度: <span id="maxAngle">0</span>°</div>
@@ -204,11 +184,9 @@
         const zoomContainer = document.getElementById('zoomContainer');
         const zoomSlider = document.getElementById('zoomSlider');
 
-        // ==== 核心狀態鎖與變數 ====
         let isKicking = false;
         let currentMaxAngle = 0;
         let useFrontCamera = false; 
-        
         let currentStream = null;
         let videoDevices = [];
         let currentDeviceIndex = 0;
@@ -218,19 +196,22 @@
         let isProcessingFrame = false; 
         let isCameraSwitching = false; 
         let hasStartedLoop = false;    
-        let lastTime = 0; // 🔥 關鍵新增：用來控制 FPS
+        let lastTime = 0; 
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
 
-        function calculateAngle(hip1, ankle1, hip2, ankle2) {
-            const dx1 = ankle1.x - hip1.x;
-            const dy1 = ankle1.y - hip1.y;
-            const dx2 = ankle2.x - hip2.x;
-            const dy2 = ankle2.y - hip2.y;
+        // 🔥 關鍵修正 1：加上 canvasW 與 canvasH，還原像素比例，解壓縮角度
+        function calculateAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
+            const dx1 = (ankle1.x - hip1.x) * canvasW;
+            const dy1 = (ankle1.y - hip1.y) * canvasH;
+            const dx2 = (ankle2.x - hip2.x) * canvasW;
+            const dy2 = (ankle2.y - hip2.y) * canvasH;
+            
             const dotProduct = dx1 * dx2 + dy1 * dy2;
             const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
             const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+            
             if (mag1 === 0 || mag2 === 0) return 0;
             return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
         }
@@ -281,16 +262,22 @@
                 const leftAnkle = landmarks[27];
                 const rightAnkle = landmarks[28];
 
-                if (leftHip.visibility > 0.5 && rightHip.visibility > 0.5 && 
-                    leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5) {
+                // 🔥 關鍵修正 2：將遮擋信心度門檻從 0.5 大幅降到 0.2，避免側身踢擊被忽視
+                if (leftHip.visibility > 0.2 && rightHip.visibility > 0.2 && 
+                    leftAnkle.visibility > 0.2 && rightAnkle.visibility > 0.2) {
                     
-                    let angle = Math.round(calculateAngle(leftHip, leftAnkle, rightHip, rightAnkle));
+                    // 傳入畫面長寬，計算真實角度
+                    let angle = Math.round(calculateAngle(
+                        leftHip, leftAnkle, rightHip, rightAnkle, 
+                        canvasElement.width, canvasElement.height
+                    ));
+                    
                     currentAngleEl.innerText = angle;
 
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
                         isKicking = true;
                         currentMaxAngle = angle;
-                        statusTextEl.innerText = "偵測中... (記錄中)";
+                        statusTextEl.innerText = "💥 偵測到踢擊，記錄中...";
                         statusTextEl.style.color = "#e74c3c"; 
                         downloadBtn.style.display = "none";
                         screenshotImg.style.display = "none";
@@ -305,7 +292,7 @@
                             bufferCtx.drawImage(canvasElement, 0, 0);
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
                             isKicking = false;
-                            statusTextEl.innerText = "完成！可進行下一次";
+                            statusTextEl.innerText = "✅ 完成！可進行下一次";
                             statusTextEl.style.color = "#2ecc71"; 
                             
                             maxAngleEl.innerText = currentMaxAngle;
@@ -315,15 +302,16 @@
                             currentMaxAngle = 0;
                         }
                     }
+                } else {
+                    // 若受試者真的完全離開畫面，將顯示數字變灰提示
+                    currentAngleEl.style.color = "#95a5a6";
                 }
             }
             canvasCtx.restore();
         }
 
         function stopMediaTracks(stream) {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-            }
+            if (stream) stream.getTracks().forEach(track => track.stop());
         }
 
         function populateCameraList() {
@@ -344,7 +332,6 @@
                     const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
                     stopMediaTracks(tempStream);
                 }
-
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 videoDevices = devices.filter(d => d.kind === 'videoinput');
                 
@@ -354,7 +341,6 @@
                            !label.includes('tele') && !label.includes('zoom') && 
                            !label.includes('ir ') && !label.includes('depth');
                 });
-
                 currentDeviceIndex = preferred !== -1 ? preferred : 0;
                 populateCameraList();
             } catch (err) {
@@ -363,29 +349,22 @@
         }
 
         async function startCamera() {
-            if (!poseLoaded) {
-                alert("AI 模型尚未準備好，請稍等。");
-                return;
-            }
+            if (!poseLoaded) { alert("AI 模型尚未準備好，請稍等。"); return; }
             if (isCameraSwitching) return; 
 
             isCameraSwitching = true; 
             statusTextEl.innerText = "切換鏡頭中...";
             statusTextEl.style.color = "#f1c40f";
 
-            // 🔥 關鍵修正 1：等待 AI 完全停止運算，防止崩潰
             while (isProcessingFrame) {
                 await new Promise(r => setTimeout(r, 10));
             }
             
             if (currentStream) {
                 stopMediaTracks(currentStream);
-                
-                // 🔥 關鍵修正 2 & 3：徹底斬斷舊鏡頭關聯與清除殘留畫面
                 videoElement.pause();
                 videoElement.srcObject = null; 
                 videoElement.load(); 
-
                 canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                 bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
             }
@@ -394,21 +373,16 @@
 
             const device = videoDevices[currentDeviceIndex];
             const deviceId = device ? { exact: device.deviceId } : undefined;
-            
             if (device) {
                 const label = device.label.toLowerCase();
                 useFrontCamera = label.includes('front') || label.includes('user') || label.includes('selfie');
             }
 
-            let constraints = {
-                video: { deviceId: deviceId, width: { ideal: 1280 }, height: { ideal: 720 } },
-                audio: false
-            };
+            let constraints = { video: { deviceId: deviceId, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
 
             try {
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
             } catch (err) {
-                console.warn("高畫質啟動失敗，嘗試降級 480p 容錯...", err);
                 constraints.video.width = { ideal: 640 };
                 constraints.video.height = { ideal: 480 };
                 try {
@@ -416,17 +390,12 @@
                 } catch (fallbackErr) {
                     isCameraSwitching = false;
                     statusTextEl.innerText = "啟動失敗，請重試";
-                    alert("無法存取此鏡頭，可能是硬體被其他APP佔用。");
                     return;
                 }
             }
 
             videoElement.srcObject = currentStream;
-
-            await new Promise((resolve) => {
-                videoElement.onloadedmetadata = () => resolve();
-            });
-
+            await new Promise((resolve) => { videoElement.onloadedmetadata = () => resolve(); });
             await videoElement.play();
             
             statusTextEl.innerText = `已切換 (${useFrontCamera ? '前鏡頭 / 鏡像' : '後鏡頭 / 正常'})`;
@@ -442,27 +411,19 @@
             }
         }
 
-        // 🔥 關鍵修正 4：加入時間戳限制 FPS
         async function processFrame(timestamp) {
-            // 控制在 ~30FPS (33ms 延遲)
             if (timestamp - lastTime < 33) {
                 requestAnimationFrame(processFrame);
                 return;
             }
             lastTime = timestamp;
 
-            if (
-                !videoElement.paused && 
-                !videoElement.ended && 
-                !isProcessingFrame && 
-                !isCameraSwitching && 
-                videoElement.videoWidth > 0 
-            ) {
+            if (!videoElement.paused && !videoElement.ended && !isProcessingFrame && !isCameraSwitching && videoElement.videoWidth > 0) {
                 isProcessingFrame = true;
                 try {
                     await pose.send({image: videoElement});
                 } catch (e) {
-                    console.error("AI 分析異常跳過該幀:", e);
+                    console.error("AI 異常:", e);
                 }
                 isProcessingFrame = false; 
             }
@@ -475,7 +436,6 @@
             await startCamera();
         });
 
-        // 🔥 關鍵修正 5：防止連點造成的 race condition
         cameraSelect.addEventListener('change', async (e) => {
             if (isCameraSwitching) return;
             currentDeviceIndex = parseInt(e.target.value);
@@ -493,7 +453,6 @@
             link.href = screenshotImg.src;
             link.click();
         });
-
     </script>
 </body>
 </html>
