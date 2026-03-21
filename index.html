@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (精準計算版)</title>
+    <title>前踢動作分析系統 (精準防抖版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -184,8 +184,6 @@
         const zoomContainer = document.getElementById('zoomContainer');
         const zoomSlider = document.getElementById('zoomSlider');
 
-        let isKicking = false;
-        let currentMaxAngle = 0;
         let useFrontCamera = false; 
         let currentStream = null;
         let videoDevices = [];
@@ -198,10 +196,16 @@
         let hasStartedLoop = false;    
         let lastTime = 0; 
         
+        // ==== 🔥 動作判定核心變數 (升級版) ====
+        let isKicking = false;
+        let currentMaxAngle = 0;
+        let smoothedAngle = 0;       // 儲存平滑化後的角度
+        let dropFrameCount = 0;      // 紀錄連續下降的幀數
+        
         const START_KICK_THRESHOLD = 40; 
-        const END_KICK_DROP = 15;        
+        const END_KICK_DROP = 25;    // 🚀 從 15 放寬到 25，防止提早結束
+        const STABLE_FRAMES = 3;     // 🚀 必須連續掉落 3 幀才算結束
 
-        // 🔥 關鍵修正 1：加上 canvasW 與 canvasH，還原像素比例，解壓縮角度
         function calculateAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
             const dx1 = (ankle1.x - hip1.x) * canvasW;
             const dy1 = (ankle1.y - hip1.y) * canvasH;
@@ -262,21 +266,33 @@
                 const leftAnkle = landmarks[27];
                 const rightAnkle = landmarks[28];
 
-                // 🔥 關鍵修正 2：將遮擋信心度門檻從 0.5 大幅降到 0.2，避免側身踢擊被忽視
                 if (leftHip.visibility > 0.2 && rightHip.visibility > 0.2 && 
                     leftAnkle.visibility > 0.2 && rightAnkle.visibility > 0.2) {
                     
-                    // 傳入畫面長寬，計算真實角度
-                    let angle = Math.round(calculateAngle(
+                    let rawAngle = calculateAngle(
                         leftHip, leftAnkle, rightHip, rightAnkle, 
                         canvasElement.width, canvasElement.height
-                    ));
-                    
-                    currentAngleEl.innerText = angle;
+                    );
 
+                    // 🚀 關鍵修正 1：角度平滑化 (EMA)
+                    if (smoothedAngle === 0) {
+                        smoothedAngle = rawAngle; // 初始化
+                    } else {
+                        // 新角度佔 60%，歷史平滑佔 40%，有效過濾瞬間抖動
+                        smoothedAngle = (rawAngle * 0.6) + (smoothedAngle * 0.4); 
+                    }
+                    
+                    let angle = Math.round(smoothedAngle);
+                    currentAngleEl.innerText = angle;
+                    currentAngleEl.style.color = "white";
+
+                    // ==== 動作狀態機 ====
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
+                        // 啟動踢擊
                         isKicking = true;
                         currentMaxAngle = angle;
+                        dropFrameCount = 0; 
+                        
                         statusTextEl.innerText = "💥 偵測到踢擊，記錄中...";
                         statusTextEl.style.color = "#e74c3c"; 
                         downloadBtn.style.display = "none";
@@ -286,24 +302,42 @@
                         bufferCtx.drawImage(canvasElement, 0, 0);
 
                     } else if (isKicking) {
+                        // 🚀 關鍵修正 2 & 3：最高點刷新與容忍下降緩衝區
                         if (angle > currentMaxAngle) {
+                            // 破紀錄，更新最高點與截圖
                             currentMaxAngle = angle;
+                            dropFrameCount = 0; // 清除下降計數
+                            
                             bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
                             bufferCtx.drawImage(canvasElement, 0, 0);
-                        } else if (angle < currentMaxAngle - END_KICK_DROP) {
-                            isKicking = false;
-                            statusTextEl.innerText = "✅ 完成！可進行下一次";
-                            statusTextEl.style.color = "#2ecc71"; 
                             
-                            maxAngleEl.innerText = currentMaxAngle;
-                            screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
-                            screenshotImg.style.display = "block";
-                            downloadBtn.style.display = "block"; 
-                            currentMaxAngle = 0;
+                        } else if (angle < currentMaxAngle - END_KICK_DROP) {
+                            // 角度低於門檻，開始計算下降幀數
+                            dropFrameCount++;
+
+                            // 必須連續掉落超過 STABLE_FRAMES 才算真正結束
+                            if (dropFrameCount >= STABLE_FRAMES) {
+                                isKicking = false;
+                                statusTextEl.innerText = "✅ 完成！可進行下一次";
+                                statusTextEl.style.color = "#2ecc71"; 
+                                
+                                maxAngleEl.innerText = currentMaxAngle;
+                                screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
+                                screenshotImg.style.display = "block";
+                                downloadBtn.style.display = "block"; 
+                                
+                                // 重置狀態準備抓下一次
+                                currentMaxAngle = 0;
+                                dropFrameCount = 0;
+                                smoothedAngle = 0;
+                            }
+                        } else {
+                            // 角度微微下降，但還沒低於 END_KICK_DROP 門檻
+                            // 視為還在最高點附近震盪，歸零下降計數
+                            dropFrameCount = 0;
                         }
                     }
                 } else {
-                    // 若受試者真的完全離開畫面，將顯示數字變灰提示
                     currentAngleEl.style.color = "#95a5a6";
                 }
             }
