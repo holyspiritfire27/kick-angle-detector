@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統</title>
+    <title>前踢動作分析系統 (Pro)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -27,7 +27,7 @@
             height: 100vh;
             z-index: 1;
             transform-origin: center center;
-            transition: transform 0.1s ease-out; 
+            transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
         }
 
         video, .output_canvas {
@@ -60,7 +60,8 @@
             color: white;
             width: 100%;
             box-sizing: border-box;
-            backdrop-filter: blur(4px); 
+            backdrop-filter: blur(8px); 
+            -webkit-backdrop-filter: blur(8px);
         }
 
         .controls {
@@ -82,11 +83,11 @@
             cursor: pointer;
             box-shadow: 0 4px 6px rgba(0,0,0,0.5);
             font-weight: bold;
+            transition: background 0.2s;
         }
 
         button:active { background-color: #2980b9; transform: translateY(2px); }
 
-        /* 下拉選單樣式 */
         select {
             padding: 10px;
             font-size: 16px;
@@ -96,7 +97,7 @@
             border-radius: 8px;
             outline: none;
             max-width: 80%;
-            display: none; /* 取得權限後才顯示 */
+            display: none; 
         }
         
         .zoom-container {
@@ -122,6 +123,7 @@
             color: #2ecc71;
             font-weight: bold;
             margin-top: 5px;
+            min-height: 24px;
         }
 
         .angle-info {
@@ -196,21 +198,25 @@
         const debugLog = document.getElementById('debugLog');
         
         const startBtn = document.getElementById('startBtn');
-        const cameraSelect = document.getElementById('cameraSelect'); // 新增 select
+        const cameraSelect = document.getElementById('cameraSelect'); 
         const downloadBtn = document.getElementById('downloadBtn');
         const zoomContainer = document.getElementById('zoomContainer');
         const zoomSlider = document.getElementById('zoomSlider');
 
+        // ==== 核心狀態鎖與變數 ====
         let isKicking = false;
         let currentMaxAngle = 0;
         let useFrontCamera = false; 
+        
         let currentStream = null;
-        let poseLoaded = false;
-        let isProcessingFrame = false; 
-
         let videoDevices = [];
         let currentDeviceIndex = 0;
         let currentZoomLevel = 1.0;
+
+        let poseLoaded = false;
+        let isProcessingFrame = false; 
+        let isCameraSwitching = false; // 🔥 鏡頭切換鎖 (防止 AI 吃錯畫面)
+        let hasStartedLoop = false;    // 🔥 Loop 鎖 (防止 CPU 爆表)
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
@@ -220,14 +226,11 @@
             const dy1 = ankle1.y - hip1.y;
             const dx2 = ankle2.x - hip2.x;
             const dy2 = ankle2.y - hip2.y;
-
             const dotProduct = dx1 * dx2 + dy1 * dy2;
             const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
             const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
-
             if (mag1 === 0 || mag2 === 0) return 0;
-            let angleRad = Math.acos(dotProduct / (mag1 * mag2));
-            return angleRad * (180 / Math.PI);
+            return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
         }
 
         const pose = new Pose({locateFile: (file) => {
@@ -249,6 +252,8 @@
         });
 
         function onResults(results) {
+            if (isCameraSwitching) return; // 二重保險
+
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
             bufferCanvas.width = videoElement.videoWidth;
@@ -305,14 +310,12 @@
                             screenshotImg.src = bufferCanvas.toDataURL('image/jpeg', 0.9);
                             screenshotImg.style.display = "block";
                             downloadBtn.style.display = "block"; 
-                            
                             currentMaxAngle = 0;
                         }
                     }
                 }
             }
             canvasCtx.restore();
-            isProcessingFrame = false; 
         }
 
         function stopMediaTracks(stream) {
@@ -321,18 +324,16 @@
             }
         }
 
-        // 建立下拉選單內容
         function populateCameraList() {
             cameraSelect.innerHTML = "";
             videoDevices.forEach((device, index) => {
                 const option = document.createElement('option');
                 option.value = index;
-                // 顯示真實硬體名稱，若無則顯示預設名稱
                 option.text = device.label || `未命名鏡頭 ${index + 1}`;
                 cameraSelect.appendChild(option);
             });
             cameraSelect.value = currentDeviceIndex;
-            cameraSelect.style.display = "inline-block"; // 顯示選單
+            cameraSelect.style.display = "inline-block"; 
         }
 
         async function getCameras() {
@@ -345,89 +346,125 @@
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 videoDevices = devices.filter(d => d.kind === 'videoinput');
                 
-                debugLog.innerText = `找到 ${videoDevices.length} 顆鏡頭`;
-
+                // 更嚴謹的過濾：避開 tele, zoom, infrared, depth 等非標準鏡頭
                 const preferred = videoDevices.findIndex(d => {
                     const label = d.label.toLowerCase();
                     return (label.includes('back') || label.includes('rear') || label.includes('environment')) &&
-                           !label.includes('tele') &&
-                           !label.includes('zoom');
+                           !label.includes('tele') && !label.includes('zoom') && 
+                           !label.includes('ir ') && !label.includes('depth');
                 });
 
                 currentDeviceIndex = preferred !== -1 ? preferred : 0;
-                
-                // 呼叫更新選單
                 populateCameraList();
-
             } catch (err) {
                 console.error("獲取鏡頭列表失敗:", err);
-                debugLog.innerText = "獲取鏡頭列表失敗";
             }
         }
 
+        // 🔥 終極版安全啟動機制
         async function startCamera() {
             if (!poseLoaded) {
-                alert("AI 尚未準備好，請稍等幾秒。");
+                alert("AI 模型尚未準備好，請稍等。");
                 return;
             }
+            if (isCameraSwitching) return; // 防止狂按造成的多重執行
 
-            statusTextEl.innerText = "正在啟動鏡頭...";
+            isCameraSwitching = true; // 鎖住 AI
+            statusTextEl.innerText = "切換鏡頭中...";
+            statusTextEl.style.color = "#f1c40f";
             
+            // 1. 徹底關閉舊鏡頭
             if (currentStream) {
                 stopMediaTracks(currentStream);
                 videoElement.srcObject = null; 
-                await new Promise(resolve => setTimeout(resolve, 200));
             }
 
-            if (videoDevices[currentDeviceIndex]) {
-                const label = videoDevices[currentDeviceIndex].label.toLowerCase();
-                // 透過名稱判斷是否為前鏡頭，以開啟鏡像
+            // 2. 等待硬體完整釋放 (iOS/Android 防卡死關鍵)
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            const device = videoDevices[currentDeviceIndex];
+            const deviceId = device ? { exact: device.deviceId } : undefined;
+            
+            if (device) {
+                const label = device.label.toLowerCase();
                 useFrontCamera = label.includes('front') || label.includes('user') || label.includes('selfie');
             }
 
-            const constraints = {
-                video: {
-                    deviceId: videoDevices[currentDeviceIndex] ? { exact: videoDevices[currentDeviceIndex].deviceId } : undefined,
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                },
+            // 理想解析度設定 (給予瀏覽器降級彈性)
+            let constraints = {
+                video: { deviceId: deviceId, width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false
             };
 
             try {
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
-                videoElement.srcObject = currentStream;
-                await videoElement.play();
-                
-                statusTextEl.innerText = `已啟動 (${useFrontCamera ? '已開啟鏡像' : '正常視角'})`;
-                startBtn.style.display = "none"; 
-                zoomContainer.style.display = "block"; 
-                
-                requestAnimationFrame(processFrame);
-                
             } catch (err) {
-                debugLog.innerText = "錯誤: " + err.name + " - " + err.message;
-                alert("無法存取此鏡頭！請嘗試從選單切換其他鏡頭。");
+                console.warn("高畫質啟動失敗，嘗試降級 480p 容錯...", err);
+                // 3. 自動降級容錯 (Fallback)
+                constraints.video.width = { ideal: 640 };
+                constraints.video.height = { ideal: 480 };
+                try {
+                    currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                } catch (fallbackErr) {
+                    isCameraSwitching = false;
+                    statusTextEl.innerText = "啟動失敗，請重試";
+                    alert("無法存取此鏡頭，可能是硬體被其他APP佔用。");
+                    return;
+                }
+            }
+
+            videoElement.srcObject = currentStream;
+
+            // 4. 等待 Metadata 載入完畢，確認畫面尺寸大於 0 (防 MediaPipe 崩潰)
+            await new Promise((resolve) => {
+                videoElement.onloadedmetadata = () => resolve();
+            });
+
+            await videoElement.play();
+            
+            statusTextEl.innerText = `已切換 (${useFrontCamera ? '前鏡頭 / 鏡像' : '後鏡頭 / 正常'})`;
+            statusTextEl.style.color = "#2ecc71";
+            startBtn.style.display = "none"; 
+            zoomContainer.style.display = "block"; 
+            
+            // 解鎖 AI
+            isCameraSwitching = false; 
+
+            // 5. 確保 RequestAnimationFrame 全域只啟動一次
+            if (!hasStartedLoop) {
+                hasStartedLoop = true;
+                requestAnimationFrame(processFrame);
             }
         }
 
+        // 🔥 防崩潰版 Frame 迴圈
         async function processFrame() {
-            if (!videoElement.paused && !videoElement.ended && !isProcessingFrame) {
+            if (
+                !videoElement.paused && 
+                !videoElement.ended && 
+                !isProcessingFrame && 
+                !isCameraSwitching && // 遇到切換就跳過不送 AI
+                videoElement.videoWidth > 0 // 確保畫面已有尺寸
+            ) {
                 isProcessingFrame = true;
-                await pose.send({image: videoElement});
+                try {
+                    await pose.send({image: videoElement});
+                } catch (e) {
+                    console.error("AI 分析異常跳過該幀:", e);
+                }
+                isProcessingFrame = false; // 確保即使報錯也能解鎖
             }
             requestAnimationFrame(processFrame);
         }
 
         startBtn.addEventListener('click', async () => {
+            startBtn.disabled = true;
             await getCameras();
-            startCamera();
+            await startCamera();
         });
 
-        // 監聽下拉選單變化，使用者手動選鏡頭時觸發
         cameraSelect.addEventListener('change', async (e) => {
             currentDeviceIndex = parseInt(e.target.value);
-            statusTextEl.innerText = "切換鏡頭中...";
             await startCamera();
         });
 
