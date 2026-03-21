@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (Pro)</title>
+    <title>前踢動作分析系統 (究極版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -30,13 +30,14 @@
             transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
         }
 
+        /* 🔥 關鍵修正：改為 cover，讓畫面裁切填滿，自動拉近受試者 */
         video, .output_canvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: contain; 
+            object-fit: cover; 
         }
 
         .ui-layer {
@@ -215,8 +216,9 @@
 
         let poseLoaded = false;
         let isProcessingFrame = false; 
-        let isCameraSwitching = false; // 🔥 鏡頭切換鎖 (防止 AI 吃錯畫面)
-        let hasStartedLoop = false;    // 🔥 Loop 鎖 (防止 CPU 爆表)
+        let isCameraSwitching = false; 
+        let hasStartedLoop = false;    
+        let lastTime = 0; // 🔥 關鍵新增：用來控制 FPS
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 15;        
@@ -252,7 +254,7 @@
         });
 
         function onResults(results) {
-            if (isCameraSwitching) return; // 二重保險
+            if (isCameraSwitching) return;
 
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
@@ -346,7 +348,6 @@
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 videoDevices = devices.filter(d => d.kind === 'videoinput');
                 
-                // 更嚴謹的過濾：避開 tele, zoom, infrared, depth 等非標準鏡頭
                 const preferred = videoDevices.findIndex(d => {
                     const label = d.label.toLowerCase();
                     return (label.includes('back') || label.includes('rear') || label.includes('environment')) &&
@@ -361,25 +362,34 @@
             }
         }
 
-        // 🔥 終極版安全啟動機制
         async function startCamera() {
             if (!poseLoaded) {
                 alert("AI 模型尚未準備好，請稍等。");
                 return;
             }
-            if (isCameraSwitching) return; // 防止狂按造成的多重執行
+            if (isCameraSwitching) return; 
 
-            isCameraSwitching = true; // 鎖住 AI
+            isCameraSwitching = true; 
             statusTextEl.innerText = "切換鏡頭中...";
             statusTextEl.style.color = "#f1c40f";
+
+            // 🔥 關鍵修正 1：等待 AI 完全停止運算，防止崩潰
+            while (isProcessingFrame) {
+                await new Promise(r => setTimeout(r, 10));
+            }
             
-            // 1. 徹底關閉舊鏡頭
             if (currentStream) {
                 stopMediaTracks(currentStream);
+                
+                // 🔥 關鍵修正 2 & 3：徹底斬斷舊鏡頭關聯與清除殘留畫面
+                videoElement.pause();
                 videoElement.srcObject = null; 
+                videoElement.load(); 
+
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
             }
 
-            // 2. 等待硬體完整釋放 (iOS/Android 防卡死關鍵)
             await new Promise(resolve => setTimeout(resolve, 300));
 
             const device = videoDevices[currentDeviceIndex];
@@ -390,7 +400,6 @@
                 useFrontCamera = label.includes('front') || label.includes('user') || label.includes('selfie');
             }
 
-            // 理想解析度設定 (給予瀏覽器降級彈性)
             let constraints = {
                 video: { deviceId: deviceId, width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false
@@ -400,7 +409,6 @@
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
             } catch (err) {
                 console.warn("高畫質啟動失敗，嘗試降級 480p 容錯...", err);
-                // 3. 自動降級容錯 (Fallback)
                 constraints.video.width = { ideal: 640 };
                 constraints.video.height = { ideal: 480 };
                 try {
@@ -415,7 +423,6 @@
 
             videoElement.srcObject = currentStream;
 
-            // 4. 等待 Metadata 載入完畢，確認畫面尺寸大於 0 (防 MediaPipe 崩潰)
             await new Promise((resolve) => {
                 videoElement.onloadedmetadata = () => resolve();
             });
@@ -427,24 +434,29 @@
             startBtn.style.display = "none"; 
             zoomContainer.style.display = "block"; 
             
-            // 解鎖 AI
             isCameraSwitching = false; 
 
-            // 5. 確保 RequestAnimationFrame 全域只啟動一次
             if (!hasStartedLoop) {
                 hasStartedLoop = true;
                 requestAnimationFrame(processFrame);
             }
         }
 
-        // 🔥 防崩潰版 Frame 迴圈
-        async function processFrame() {
+        // 🔥 關鍵修正 4：加入時間戳限制 FPS
+        async function processFrame(timestamp) {
+            // 控制在 ~30FPS (33ms 延遲)
+            if (timestamp - lastTime < 33) {
+                requestAnimationFrame(processFrame);
+                return;
+            }
+            lastTime = timestamp;
+
             if (
                 !videoElement.paused && 
                 !videoElement.ended && 
                 !isProcessingFrame && 
-                !isCameraSwitching && // 遇到切換就跳過不送 AI
-                videoElement.videoWidth > 0 // 確保畫面已有尺寸
+                !isCameraSwitching && 
+                videoElement.videoWidth > 0 
             ) {
                 isProcessingFrame = true;
                 try {
@@ -452,7 +464,7 @@
                 } catch (e) {
                     console.error("AI 分析異常跳過該幀:", e);
                 }
-                isProcessingFrame = false; // 確保即使報錯也能解鎖
+                isProcessingFrame = false; 
             }
             requestAnimationFrame(processFrame);
         }
@@ -463,7 +475,9 @@
             await startCamera();
         });
 
+        // 🔥 關鍵修正 5：防止連點造成的 race condition
         cameraSelect.addEventListener('change', async (e) => {
+            if (isCameraSwitching) return;
             currentDeviceIndex = parseInt(e.target.value);
             await startCamera();
         });
