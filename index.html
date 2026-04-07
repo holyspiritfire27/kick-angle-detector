@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (絕不黑屏版)</title>
+    <title>前踢動作分析系統 (究極版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -28,7 +28,6 @@
             transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
             background-color: #000;
         }
-        /* 確保不裁切畫面 */
         .output_canvas {
             position: absolute;
             top: 0;
@@ -142,7 +141,7 @@
 <body>
 
     <div class="camera-container" id="cameraContainer">
-        <video id="videoElement" playsinline autoplay muted style="opacity:0.01; position:absolute; width:1px; height:1px; left:-9999px;"></video>
+        <video id="videoElement" playsinline autoplay muted style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; pointer-events:none;"></video>
         <canvas class="output_canvas"></canvas>
         <canvas id="buffer_canvas" style="display:none;"></canvas>
     </div>
@@ -173,10 +172,15 @@
         const videoElement = document.getElementById('videoElement');
         const canvasElement = document.getElementsByClassName('output_canvas')[0];
         const canvasCtx = canvasElement.getContext('2d');
+        
         const bufferCanvas = document.getElementById('buffer_canvas');
         const bufferCtx = bufferCanvas.getContext('2d');
-        const cameraContainer = document.getElementById('cameraContainer');
+        
+        // 🔥 關鍵新增：中繼畫布 (破解 GPU 加速導致的黑畫面)
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
 
+        const cameraContainer = document.getElementById('cameraContainer');
         const currentAngleEl = document.getElementById('currentAngle');
         const statusTextEl = document.getElementById('statusText');
         const maxAngleEl = document.getElementById('maxAngle');
@@ -224,24 +228,32 @@
             return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
         }
 
-        // 🔥 關鍵修正 2：截圖專用函數，改抓 videoElement 並後補骨架
+        // 🔥 關鍵修正 2：導入中繼畫布 (tempCanvas) 徹底解決黑畫面
         function captureMaxPointFrame(landmarks) {
-            // 確保影片準備好且有長寬
             if (videoElement.readyState < 2 || videoElement.videoWidth === 0) return;
+
+            debugLog.innerText = `截圖來源解析度: ${videoElement.videoWidth}x${videoElement.videoHeight}`;
+
+            // ⭐ Step 1：先畫到純 CPU 層的中繼畫布 (破解黑屏)
+            tempCanvas.width = videoElement.videoWidth;
+            tempCanvas.height = videoElement.videoHeight;
+            tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
+
+            // ⭐ Step 2：再畫到我們要加上骨架的緩衝區畫布
+            bufferCanvas.width = videoElement.videoWidth;
+            bufferCanvas.height = videoElement.videoHeight;
 
             bufferCtx.save();
             bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
             
-            // 處理鏡像
             if (useFrontCamera) {
                 bufferCtx.translate(bufferCanvas.width, 0);
                 bufferCtx.scale(-1, 1);
             }
             
-            // ⭐ 第一步：畫上最真實的原始攝影機畫面 (絕對不黑屏)
-            bufferCtx.drawImage(videoElement, 0, 0, bufferCanvas.width, bufferCanvas.height);
+            // 從 tempCanvas 複製過來 (100% 會有畫面)
+            bufferCtx.drawImage(tempCanvas, 0, 0, bufferCanvas.width, bufferCanvas.height);
             
-            // ⭐ 第二步：把 AI 算出來的骨架疊加上去
             if (landmarks) {
                 drawConnectors(bufferCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
                 drawLandmarks(bufferCtx, landmarks, {color: '#FF0000', lineWidth: 2});
@@ -273,8 +285,6 @@
 
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
-            bufferCanvas.width = videoElement.videoWidth;
-            bufferCanvas.height = videoElement.videoHeight;
             
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
@@ -284,7 +294,6 @@
                 canvasCtx.scale(-1, 1);
             }
             
-            // 顯示用的畫面 (給使用者看的)
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
             if (results.poseLandmarks) {
@@ -315,7 +324,6 @@
                     currentAngleEl.innerText = angle;
                     currentAngleEl.style.color = "white";
 
-                    // ==== 核心截圖與判定邏輯 ====
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
                         isKicking = true;
                         currentMaxAngle = angle;
@@ -326,7 +334,6 @@
                         downloadBtn.style.display = "none";
                         screenshotImg.style.display = "none";
                         
-                        // 呼叫安全的截圖函數
                         captureMaxPointFrame(landmarks); 
 
                     } else if (isKicking) {
@@ -334,7 +341,6 @@
                             currentMaxAngle = angle;
                             dropFrameCount = 0; 
                             
-                            // 更新最高點時，刷新截圖
                             captureMaxPointFrame(landmarks); 
                             
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
@@ -346,7 +352,6 @@
                                 statusTextEl.style.color = "#2ecc71"; 
                                 maxAngleEl.innerText = currentMaxAngle;
                                 
-                                // 🔥 使用 Blob 取代 toDataURL，避免記憶體塞爆
                                 bufferCanvas.toBlob((blob) => {
                                     if (!blob) return;
                                     const objectUrl = URL.createObjectURL(blob);
@@ -448,6 +453,7 @@
                 videoElement.load(); 
                 canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                 bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+                tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height); // 順便清眼中繼
             }
 
             await new Promise(resolve => setTimeout(resolve, 300));
