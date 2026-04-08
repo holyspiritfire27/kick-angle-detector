@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (究極版)</title>
+    <title>前踢角度測量系統 (專業版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -176,7 +176,7 @@
         const bufferCanvas = document.getElementById('buffer_canvas');
         const bufferCtx = bufferCanvas.getContext('2d');
         
-        // 🔥 關鍵新增：中繼畫布 (破解 GPU 加速導致的黑畫面)
+        // 破解 GPU 黑畫面的中繼畫布
         const tempCanvas = document.createElement('canvas');
         const tempCtx = tempCanvas.getContext('2d');
 
@@ -210,6 +210,10 @@
         let smoothedAngle = 0;       
         let dropFrameCount = 0;      
         
+        // 🔥 關鍵新增：用來凍結最完美的瞬間
+        let bestFrameBlob = null;
+        let bestAngle = 0;
+        
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 20;    
         const STABLE_FRAMES = 5;     
@@ -228,38 +232,58 @@
             return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
         }
 
-        // 🔥 關鍵修正 2：導入中繼畫布 (tempCanvas) 徹底解決黑畫面
-        function captureMaxPointFrame(landmarks) {
+        // 🔥 升級版：背景淡化 + 顯示角度浮水印 + 凍結截圖
+        function captureMaxPointFrame(landmarks, angle) {
             if (videoElement.readyState < 2 || videoElement.videoWidth === 0) return;
 
-            debugLog.innerText = `截圖來源解析度: ${videoElement.videoWidth}x${videoElement.videoHeight}`;
-
-            // ⭐ Step 1：先畫到純 CPU 層的中繼畫布 (破解黑屏)
+            // Step 1：過水 tempCanvas (確保 iOS/Android 不會黑頻)
             tempCanvas.width = videoElement.videoWidth;
             tempCanvas.height = videoElement.videoHeight;
             tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
 
-            // ⭐ Step 2：再畫到我們要加上骨架的緩衝區畫布
             bufferCanvas.width = videoElement.videoWidth;
             bufferCanvas.height = videoElement.videoHeight;
 
             bufferCtx.save();
             bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
             
+            // 處理鏡像 (只影響影片與骨架)
             if (useFrontCamera) {
                 bufferCtx.translate(bufferCanvas.width, 0);
                 bufferCtx.scale(-1, 1);
             }
             
-            // 從 tempCanvas 複製過來 (100% 會有畫面)
+            // ⭐ 畫原始畫面
             bufferCtx.drawImage(tempCanvas, 0, 0, bufferCanvas.width, bufferCanvas.height);
             
+            // ⭐ 背景淡化 (人亮、背景暗)
+            bufferCtx.fillStyle = "rgba(0,0,0,0.5)";
+            bufferCtx.fillRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+            
+            // ⭐ 畫骨架 (不受淡化影響，保持高亮)
             if (landmarks) {
                 drawConnectors(bufferCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
                 drawLandmarks(bufferCtx, landmarks, {color: '#FF0000', lineWidth: 2});
             }
             
+            // ⭐ 復原鏡像 (確保文字不會變成反的)
             bufferCtx.restore();
+
+            // ⭐ 顯示最大角度標籤 (左上角)
+            bufferCtx.fillStyle = "rgba(0,0,0,0.6)";
+            bufferCtx.fillRect(20, 20, 250, 60); // 黑色半透明底框
+            
+            bufferCtx.fillStyle = "#f1c40f";
+            bufferCtx.font = "bold 42px Arial";
+            bufferCtx.fillText(`MAX: ${angle}°`, 35, 65); // 黃色文字標籤
+
+            // ⭐ 立即把這張「歷史高點」轉成 Blob 存起來
+            bufferCanvas.toBlob((blob) => {
+                if (blob) {
+                    bestFrameBlob = blob;
+                    bestAngle = angle;
+                }
+            }, 'image/jpeg', 0.9);
         }
 
         const pose = new Pose({locateFile: (file) => {
@@ -324,54 +348,63 @@
                     currentAngleEl.innerText = angle;
                     currentAngleEl.style.color = "white";
 
+                    // ==== 🔥 最強判定邏輯：即時凍結最高點 ====
                     if (!isKicking && angle > START_KICK_THRESHOLD) {
+                        // 開始起腳
                         isKicking = true;
                         currentMaxAngle = angle;
                         dropFrameCount = 0; 
                         
+                        // 重置上次截圖
+                        bestFrameBlob = null;
+                        bestAngle = 0;
+
                         statusTextEl.innerText = "💥 捕捉最高點中...";
                         statusTextEl.style.color = "#e74c3c"; 
                         downloadBtn.style.display = "none";
                         screenshotImg.style.display = "none";
                         
-                        captureMaxPointFrame(landmarks); 
+                        captureMaxPointFrame(landmarks, currentMaxAngle); 
 
                     } else if (isKicking) {
                         if (angle > currentMaxAngle) {
+                            // 🚀 創新高！立刻鎖定這瞬間的畫面與角度
                             currentMaxAngle = angle;
                             dropFrameCount = 0; 
-                            
-                            captureMaxPointFrame(landmarks); 
+                            captureMaxPointFrame(landmarks, currentMaxAngle); 
                             
                         } else if (angle < currentMaxAngle - END_KICK_DROP) {
+                            // 角度開始下降
                             dropFrameCount++;
 
                             if (dropFrameCount >= STABLE_FRAMES) {
+                                // 確實踢完了
                                 isKicking = false;
                                 statusTextEl.innerText = "✅ 完成！請看右下角截圖";
                                 statusTextEl.style.color = "#2ecc71"; 
-                                maxAngleEl.innerText = currentMaxAngle;
                                 
-                                bufferCanvas.toBlob((blob) => {
-                                    if (!blob) return;
-                                    const objectUrl = URL.createObjectURL(blob);
+                                // ⭐ 使用剛才凍結在最高點的 Blob 照片
+                                if (bestFrameBlob) {
+                                    const objectUrl = URL.createObjectURL(bestFrameBlob);
                                     
                                     screenshotImg.src = objectUrl;
                                     screenshotImg.style.display = "block";
                                     downloadBtn.style.display = "block"; 
                                     
+                                    maxAngleEl.innerText = bestAngle; // 更新最終畫面文字
+                                    
                                     downloadBtn.onclick = async () => {
                                         try {
-                                            const file = new File([blob], `kick_${maxAngleEl.innerText}deg.jpg`, { type: 'image/jpeg' });
+                                            const file = new File([bestFrameBlob], `kick_${bestAngle}deg.jpg`, { type: 'image/jpeg' });
                                             if (navigator.canShare && navigator.canShare({ files: [file] })) {
                                                 await navigator.share({
                                                     files: [file],
                                                     title: '前踢最高點紀錄',
-                                                    text: `完美捕捉！最高點角度：${maxAngleEl.innerText} 度`
+                                                    text: `完美捕捉！最高點角度：${bestAngle} 度`
                                                 });
                                             } else {
                                                 const link = document.createElement('a');
-                                                link.download = `kick_${maxAngleEl.innerText}deg.jpg`;
+                                                link.download = `kick_${bestAngle}deg.jpg`;
                                                 link.href = objectUrl;
                                                 link.click();
                                             }
@@ -379,7 +412,7 @@
                                             alert("請直接【長按】畫面右下角的截圖，選擇「儲存圖片」即可！");
                                         }
                                     };
-                                }, 'image/jpeg', 0.9);
+                                }
                                 
                                 currentMaxAngle = 0;
                                 dropFrameCount = 0;
@@ -453,7 +486,7 @@
                 videoElement.load(); 
                 canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                 bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
-                tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height); // 順便清眼中繼
+                tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height); 
             }
 
             await new Promise(resolve => setTimeout(resolve, 300));
