@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (終極版)</title>
+    <title>前踢動作分析系統 (3D 物理引擎版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -161,7 +161,7 @@
         </div>
         <div class="bottom-panel">
             <div class="angle-info">目前角度: <span id="currentAngle">0</span>°</div>
-            <div class="angle-info" id="finalAngleText">最高點角度: <span id="maxAngle">0</span>°</div>
+            <div class="angle-info" id="finalAngleText">真實最高點: <span id="maxAngle">0</span>°</div>
             <button id="downloadBtn">⬇️ 儲存最高點截圖</button>
         </div>
     </div>
@@ -176,7 +176,6 @@
         const bufferCanvas = document.getElementById('buffer_canvas');
         const bufferCtx = bufferCanvas.getContext('2d');
         
-        // 保留破解 GPU 黑畫面的中繼畫布
         const tempCanvas = document.createElement('canvas');
         const tempCtx = tempCanvas.getContext('2d');
 
@@ -210,33 +209,41 @@
         let smoothedAngle = 0;       
         let dropFrameCount = 0;      
         
-        // 🔥 關鍵修正：改用 Base64 字串儲存，100% 同步不漏圖
         let bestFrameDataUrl = null;
         let bestAngle = 0;
+        
+        // 🔥 終極解法變數：追蹤速度反轉 (Y軸)
+        let lastAnkleY = null;
+        let goingUp = false;
+        let hasCapturedApex = false; 
         
         const START_KICK_THRESHOLD = 40; 
         const END_KICK_DROP = 20;    
         const STABLE_FRAMES = 5;     
 
-        function calculateAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
+        // 🔥 升級版：3D 真實空間角度計算
+        function calculate3DAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
+            // 加入螢幕長寬比例，避免 3D 向量變形。
+            // MediaPipe 的 Z 軸比例預設等同於畫面寬度 (X軸)，因此 Z 也乘上 canvasW
             const dx1 = (ankle1.x - hip1.x) * canvasW;
             const dy1 = (ankle1.y - hip1.y) * canvasH;
+            const dz1 = (ankle1.z - hip1.z) * canvasW; 
+            
             const dx2 = (ankle2.x - hip2.x) * canvasW;
             const dy2 = (ankle2.y - hip2.y) * canvasH;
+            const dz2 = (ankle2.z - hip2.z) * canvasW; 
             
-            const dotProduct = dx1 * dx2 + dy1 * dy2;
-            const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
-            const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+            const dotProduct = dx1 * dx2 + dy1 * dy2 + dz1 * dz2;
+            const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1);
+            const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2 + dz2 * dz2);
             
             if (mag1 === 0 || mag2 === 0) return 0;
             return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
         }
 
-        // 🔥 終極版截圖：同步 + 破解黑畫面 + 電競級視覺
         function captureMaxPointFrame(landmarks, angle) {
             if (videoElement.readyState < 2 || videoElement.videoWidth === 0) return;
 
-            // 依然需要 tempCanvas 過水，避免直接讀 video 變黑畫面
             tempCanvas.width = videoElement.videoWidth;
             tempCanvas.height = videoElement.videoHeight;
             tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
@@ -247,20 +254,16 @@
             bufferCtx.save();
             bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
             
-            // 處理鏡像
             if (useFrontCamera) {
                 bufferCtx.translate(bufferCanvas.width, 0);
                 bufferCtx.scale(-1, 1);
             }
             
-            // 畫過水的影像
             bufferCtx.drawImage(tempCanvas, 0, 0, bufferCanvas.width, bufferCanvas.height);
             
-            // 背景淡化
             bufferCtx.fillStyle = "rgba(0,0,0,0.5)";
             bufferCtx.fillRect(0, 0, bufferCanvas.width, bufferCanvas.height);
             
-            // 畫骨架
             if (landmarks) {
                 drawConnectors(bufferCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
                 drawLandmarks(bufferCtx, landmarks, {color: '#FF0000', lineWidth: 2});
@@ -268,14 +271,12 @@
             
             bufferCtx.restore();
 
-            // 顯示最大角度標籤
             bufferCtx.fillStyle = "rgba(0,0,0,0.6)";
             bufferCtx.fillRect(20, 20, 250, 60); 
             bufferCtx.fillStyle = "#f1c40f";
             bufferCtx.font = "bold 42px Arial";
             bufferCtx.fillText(`MAX: ${angle}°`, 35, 65); 
 
-            // ⭐ 核心修正：改用同步的 toDataURL，程式會死等這行轉完才往下走！
             bestFrameDataUrl = bufferCanvas.toDataURL('image/jpeg', 0.9);
             bestAngle = angle;
         }
@@ -285,7 +286,7 @@
         }});
         pose.setOptions({
             modelComplexity: 1, 
-            smoothLandmarks: true,
+            smoothLandmarks: true, // 內建強大平滑濾波，讓速度判定更穩
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
@@ -324,10 +325,14 @@
                 const leftAnkle = landmarks[27];
                 const rightAnkle = landmarks[28];
 
+                // 抓取較高的那隻腳的 Y 座標 (螢幕Y軸 0 在最上方，所以取較小值)
+                const kickingAnkleY = Math.min(leftAnkle.y, rightAnkle.y);
+
                 if (leftHip.visibility > 0.2 && rightHip.visibility > 0.2 && 
                     leftAnkle.visibility > 0.2 && rightAnkle.visibility > 0.2) {
                     
-                    let rawAngle = calculateAngle(
+                    // ⭐ 使用全新的 3D 空間角度算法
+                    let rawAngle = calculate3DAngle(
                         leftHip, leftAnkle, rightHip, rightAnkle, 
                         canvasElement.width, canvasElement.height
                     );
@@ -347,33 +352,59 @@
                         currentMaxAngle = angle;
                         dropFrameCount = 0; 
                         
-                        // 重置
+                        // 重置物理頂點判定
+                        lastAnkleY = kickingAnkleY;
+                        goingUp = false;
+                        hasCapturedApex = false;
+
                         bestFrameDataUrl = null;
                         bestAngle = 0;
 
-                        statusTextEl.innerText = "💥 捕捉最高點中...";
+                        statusTextEl.innerText = "💥 追蹤速度中...";
                         statusTextEl.style.color = "#e74c3c"; 
                         downloadBtn.style.display = "none";
                         screenshotImg.style.display = "none";
-                        
-                        captureMaxPointFrame(landmarks, currentMaxAngle); 
 
                     } else if (isKicking) {
+                        // 追蹤絕對最大角度
                         if (angle > currentMaxAngle) {
                             currentMaxAngle = angle;
-                            dropFrameCount = 0; 
-                            // 🚀 創新高！同步鎖定畫面
-                            captureMaxPointFrame(landmarks, currentMaxAngle); 
+                        }
+
+                        // ============================================
+                        // ⭐ 終極頂點鎖定法：速度反轉判定 (Velocity = 0)
+                        // ============================================
+                        if (lastAnkleY !== null && !hasCapturedApex) {
                             
-                        } else if (angle < currentMaxAngle - END_KICK_DROP) {
+                            // Y 數值變小代表腳往上抬 (Rising)
+                            if (kickingAnkleY < lastAnkleY) {
+                                goingUp = true;
+                            }
+
+                            // 如果原本往上，現在 Y 卻變大了，代表【速度歸零，開始掉落】
+                            if (goingUp && kickingAnkleY > lastAnkleY) {
+                                // ⚡ 這一刻就是真正的最高點！立刻鎖死拍照！
+                                captureMaxPointFrame(landmarks, currentMaxAngle);
+                                hasCapturedApex = true; 
+                                statusTextEl.innerText = "📸 頂點鎖定！等待收腿...";
+                            }
+                        }
+                        lastAnkleY = kickingAnkleY; // 更新 Y 座標紀錄
+
+                        // 判斷踢擊徹底結束 (等腿完全放下來才亮出結果)
+                        if (angle < currentMaxAngle - END_KICK_DROP) {
                             dropFrameCount++;
 
                             if (dropFrameCount >= STABLE_FRAMES) {
                                 isKicking = false;
-                                statusTextEl.innerText = "✅ 完成！請看右下角截圖";
+                                statusTextEl.innerText = "✅ 完成！請看右下角";
                                 statusTextEl.style.color = "#2ecc71"; 
                                 
-                                // ⭐ 100% 同步顯示圖片
+                                // 如果因為特殊原因(例如腿抖動過快)沒抓到頂點，做一個防呆保底
+                                if (!bestFrameDataUrl) {
+                                    captureMaxPointFrame(landmarks, currentMaxAngle);
+                                }
+
                                 if (bestFrameDataUrl) {
                                     screenshotImg.src = bestFrameDataUrl;
                                     screenshotImg.style.display = "block";
@@ -382,7 +413,6 @@
                                     
                                     downloadBtn.onclick = async () => {
                                         try {
-                                            // 將 DataURL 轉回 Blob 以便使用 Web Share API
                                             const res = await fetch(bestFrameDataUrl);
                                             const blob = await res.blob();
                                             const file = new File([blob], `kick_${bestAngle}deg.jpg`, { type: 'image/jpeg' });
@@ -397,7 +427,6 @@
                                                 throw new Error("Share not supported");
                                             }
                                         } catch (e) {
-                                            // 退回傳統下載模式
                                             const link = document.createElement('a');
                                             link.download = `kick_${bestAngle}deg.jpg`;
                                             link.href = bestFrameDataUrl;
