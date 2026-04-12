@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>前踢動作分析系統 (3D 版)</title>
+    <title>前踢動作分析系統 (專業VAR版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
@@ -79,7 +79,22 @@
             font-weight: bold;
             transition: background 0.2s;
         }
-        button:active { background-color: #2980b9; transform: translateY(2px); }
+        button:active { transform: translateY(2px); }
+        button:disabled { background-color: #7f8c8d; cursor: not-allowed; }
+        
+        #kickBtn {
+            background-color: #e74c3c;
+            display: none;
+            font-size: 18px;
+            padding: 15px 30px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(231, 76, 60, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+        }
+
         select {
             padding: 10px;
             font-size: 16px;
@@ -97,16 +112,17 @@
             max-width: 300px;
             display: none; 
         }
-        .zoom-container input[type=range] {
-            width: 100%;
-            margin-top: 5px;
+        .zoom-container input[type=range] { width: 100%; margin-top: 5px; }
+        
+        .action-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 10px;
         }
-        #downloadBtn {
-            background-color: #e67e22;
-            display: none;
-            margin: 10px auto 0 auto;
-            width: fit-content;
-        }
+        #downloadBtn { background-color: #f39c12; display: none; }
+        #downloadVideoBtn { background-color: #9b59b6; display: none; }
+        
         .status-display {
             font-size: 18px;
             color: #2ecc71;
@@ -114,28 +130,37 @@
             margin-top: 5px;
             min-height: 24px;
         }
-        .angle-info {
-            font-size: 24px;
-            font-weight: bold;
-        }
+        .angle-info { font-size: 24px; font-weight: bold; }
         #currentAngle { color: white; }
         #maxAngle { color: #f1c40f; font-size: 32px; }
+        
+        /* 截圖與影片預覽區 */
+        .preview-container {
+            position: absolute;
+            bottom: 150px;
+            right: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: auto;
+            z-index: 30;
+        }
         #screenshotImg {
-            max-width: 40%;
-            max-height: 20vh;
+            max-width: 150px;
             border: 2px solid #f1c40f;
             border-radius: 8px;
             display: none;
-            position: absolute;
-            bottom: 130px;
-            right: 15px;
-            z-index: 30;
             box-shadow: 0 4px 10px rgba(0,0,0,0.8);
-            pointer-events: auto;
-            -webkit-touch-callout: default; 
             background-color: #000;
         }
-        #debugLog { font-size: 12px; color: #e74c3c; margin-top: 5px; word-wrap: break-word; }
+        #replayVideo {
+            max-width: 150px;
+            border: 2px solid #9b59b6;
+            border-radius: 8px;
+            display: none;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.8);
+            background-color: #000;
+        }
     </style>
 </head>
 <body>
@@ -151,31 +176,35 @@
             <div class="controls">
                 <button id="startBtn">啟動鏡頭</button>
                 <select id="cameraSelect"></select>
+                <button id="kickBtn">🥋 按下開始錄影測量</button>
             </div>
             <div class="zoom-container" id="zoomContainer">
                 <label for="zoomSlider">🔍 調整畫面遠近：</label>
                 <input type="range" id="zoomSlider" min="0.7" max="3" step="0.1" value="1">
             </div>
             <div class="status-display" id="statusText">等待啟動...</div>
-            <div id="debugLog"></div>
         </div>
         <div class="bottom-panel">
             <div class="angle-info">目前角度: <span id="currentAngle">0</span>°</div>
             <div class="angle-info" id="finalAngleText">真實最高點: <span id="maxAngle">0</span>°</div>
-            <button id="downloadBtn">⬇️ 儲存最高點截圖</button>
+            <div class="action-buttons">
+                <button id="downloadBtn">📸 下載最高點截圖</button>
+                <button id="downloadVideoBtn">🎬 下載5倍慢動作影片</button>
+            </div>
         </div>
     </div>
 
-    <img id="screenshotImg" alt="截圖">
+    <div class="preview-container">
+        <img id="screenshotImg" alt="截圖">
+        <video id="replayVideo" autoplay loop muted playsinline></video>
+    </div>
 
     <script>
         const videoElement = document.getElementById('videoElement');
         const canvasElement = document.getElementsByClassName('output_canvas')[0];
         const canvasCtx = canvasElement.getContext('2d');
-        
         const bufferCanvas = document.getElementById('buffer_canvas');
         const bufferCtx = bufferCanvas.getContext('2d');
-        
         const tempCanvas = document.createElement('canvas');
         const tempCtx = tempCanvas.getContext('2d');
 
@@ -183,52 +212,42 @@
         const currentAngleEl = document.getElementById('currentAngle');
         const statusTextEl = document.getElementById('statusText');
         const maxAngleEl = document.getElementById('maxAngle');
+        
         const screenshotImg = document.getElementById('screenshotImg');
-        const debugLog = document.getElementById('debugLog');
+        const replayVideo = document.getElementById('replayVideo');
         
         const startBtn = document.getElementById('startBtn');
         const cameraSelect = document.getElementById('cameraSelect'); 
+        const kickBtn = document.getElementById('kickBtn');
         const downloadBtn = document.getElementById('downloadBtn');
-        const zoomContainer = document.getElementById('zoomContainer');
+        const downloadVideoBtn = document.getElementById('downloadVideoBtn');
         const zoomSlider = document.getElementById('zoomSlider');
 
         let useFrontCamera = false; 
         let currentStream = null;
         let videoDevices = [];
         let currentDeviceIndex = 0;
-        let currentZoomLevel = 1.0;
-
         let poseLoaded = false;
         let isProcessingFrame = false; 
         let isCameraSwitching = false; 
-        let hasStartedLoop = false;    
-        let lastTime = 0; 
+
+        // ⭐ 錄影與檢定相關變數
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let videoBlobUrl = null;
         
-        let isKicking = false;
-        let currentMaxAngle = 0;
-        let smoothedAngle = 0;       
-        let dropFrameCount = 0;      
-        
+        let isRecording = false;     // 是否已按下踢擊按鈕，開始錄影
+        let hasLiftedOff = false;    // 腳是否已經離地 (開始動作)
         let bestFrameDataUrl = null;
         let bestAngle = 0;
-        
-        // 🔥 終極解法變數：追蹤速度反轉 (Y軸)
-        let lastAnkleY = null;
-        let goingUp = false;
-        let hasCapturedApex = false; 
-        
-        const START_KICK_THRESHOLD = 40; 
-        const END_KICK_DROP = 20;    
-        const STABLE_FRAMES = 5;     
 
-        // 🔥 升級版：3D 真實空間角度計算
+        // 判斷腳離地的嚴格門檻：兩腳踝 Y 軸差距需大於畫面高度的 8%
+        const LIFT_THRESHOLD = 0.08; 
+
         function calculate3DAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
-            // 加入螢幕長寬比例，避免 3D 向量變形。
-            // MediaPipe 的 Z 軸比例預設等同於畫面寬度 (X軸)，因此 Z 也乘上 canvasW
             const dx1 = (ankle1.x - hip1.x) * canvasW;
             const dy1 = (ankle1.y - hip1.y) * canvasH;
             const dz1 = (ankle1.z - hip1.z) * canvasW; 
-            
             const dx2 = (ankle2.x - hip2.x) * canvasW;
             const dy2 = (ankle2.y - hip2.y) * canvasH;
             const dz2 = (ankle2.z - hip2.z) * canvasW; 
@@ -236,39 +255,30 @@
             const dotProduct = dx1 * dx2 + dy1 * dy2 + dz1 * dz2;
             const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1);
             const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2 + dz2 * dz2);
-            
             if (mag1 === 0 || mag2 === 0) return 0;
             return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
         }
 
         function captureMaxPointFrame(landmarks, angle) {
             if (videoElement.readyState < 2 || videoElement.videoWidth === 0) return;
-
             tempCanvas.width = videoElement.videoWidth;
             tempCanvas.height = videoElement.videoHeight;
             tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
 
             bufferCanvas.width = videoElement.videoWidth;
             bufferCanvas.height = videoElement.videoHeight;
-
             bufferCtx.save();
-            bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
-            
             if (useFrontCamera) {
                 bufferCtx.translate(bufferCanvas.width, 0);
                 bufferCtx.scale(-1, 1);
             }
-            
             bufferCtx.drawImage(tempCanvas, 0, 0, bufferCanvas.width, bufferCanvas.height);
-            
             bufferCtx.fillStyle = "rgba(0,0,0,0.5)";
             bufferCtx.fillRect(0, 0, bufferCanvas.width, bufferCanvas.height);
-            
             if (landmarks) {
                 drawConnectors(bufferCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
                 drawLandmarks(bufferCtx, landmarks, {color: '#FF0000', lineWidth: 2});
             }
-            
             bufferCtx.restore();
 
             bufferCtx.fillStyle = "rgba(0,0,0,0.6)";
@@ -281,12 +291,88 @@
             bestAngle = angle;
         }
 
+        // 🎬 開始錄製 Canvas 畫面
+        function startMediaRecording() {
+            recordedChunks = [];
+            // 擷取 Canvas 畫面，包含骨架
+            const stream = canvasElement.captureStream(30); 
+            try {
+                mediaRecorder = new MediaRecorder(stream);
+            } catch (e) {
+                console.error("MediaRecorder 建立失敗", e);
+                return;
+            }
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) recordedChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                // 將錄好的片段轉為影片
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl);
+                videoBlobUrl = URL.createObjectURL(blob);
+                
+                // 設定 5 倍慢動作播放
+                replayVideo.src = videoBlobUrl;
+                replayVideo.playbackRate = 0.2; 
+                
+                replayVideo.style.display = "block";
+                downloadVideoBtn.style.display = "block";
+
+                // 顯示最高點截圖
+                if (bestFrameDataUrl) {
+                    screenshotImg.src = bestFrameDataUrl;
+                    screenshotImg.style.display = "block";
+                    downloadBtn.style.display = "block";
+                    maxAngleEl.innerText = bestAngle;
+                }
+                
+                statusTextEl.innerText = "✅ 測量完成！(下方為5倍慢動作)";
+                statusTextEl.style.color = "#2ecc71"; 
+                kickBtn.disabled = false;
+                kickBtn.innerText = "🥋 再測一次";
+            };
+
+            mediaRecorder.start();
+        }
+
+        // 🛑 停止錄製
+        function stopMediaRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+        }
+
+        // 🥋 按下踢擊按鈕：清除狀態，開始錄影
+        kickBtn.addEventListener('click', () => {
+            if (!poseLoaded) return;
+            isRecording = true;
+            hasLiftedOff = false;
+            bestAngle = 0;
+            bestFrameDataUrl = null;
+
+            screenshotImg.style.display = "none";
+            replayVideo.style.display = "none";
+            downloadBtn.style.display = "none";
+            downloadVideoBtn.style.display = "none";
+            maxAngleEl.innerText = "0";
+
+            kickBtn.disabled = true;
+            kickBtn.innerText = "錄影中...";
+            statusTextEl.innerText = "🔴 錄影中... 請起腳踢擊！";
+            statusTextEl.style.color = "#e74c3c";
+
+            startMediaRecording();
+        });
+
+
         const pose = new Pose({locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
         }});
         pose.setOptions({
             modelComplexity: 1, 
-            smoothLandmarks: true, // 內建強大平滑濾波，讓速度判定更穩
+            smoothLandmarks: true,
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
@@ -304,7 +390,6 @@
 
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
-            
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
@@ -325,270 +410,134 @@
                 const leftAnkle = landmarks[27];
                 const rightAnkle = landmarks[28];
 
-                // 抓取較高的那隻腳的 Y 座標 (螢幕Y軸 0 在最上方，所以取較小值)
-                const kickingAnkleY = Math.min(leftAnkle.y, rightAnkle.y);
-
                 if (leftHip.visibility > 0.2 && rightHip.visibility > 0.2 && 
                     leftAnkle.visibility > 0.2 && rightAnkle.visibility > 0.2) {
                     
-                    // ⭐ 使用全新的 3D 空間角度算法
-                    let rawAngle = calculate3DAngle(
-                        leftHip, leftAnkle, rightHip, rightAnkle, 
-                        canvasElement.width, canvasElement.height
-                    );
+                    let rawAngle = Math.round(calculate3DAngle(leftHip, leftAnkle, rightHip, rightAnkle, canvasElement.width, canvasElement.height));
+                    currentAngleEl.innerText = rawAngle;
 
-                    if (smoothedAngle === 0) {
-                        smoothedAngle = rawAngle; 
-                    } else {
-                        smoothedAngle = (rawAngle * 0.6) + (smoothedAngle * 0.4); 
-                    }
-                    
-                    let angle = Math.round(smoothedAngle);
-                    currentAngleEl.innerText = angle;
-                    currentAngleEl.style.color = "white";
+                    // ⭐ 嚴格判定邏輯 (必須按下按鈕才啟動)
+                    if (isRecording) {
+                        // 兩腳的 Y 軸差距 (判定一腳踩死，一腳離地)
+                        const ankleYDiff = Math.abs(leftAnkle.y - rightAnkle.y);
 
-                    if (!isKicking && angle > START_KICK_THRESHOLD) {
-                        isKicking = true;
-                        currentMaxAngle = angle;
-                        dropFrameCount = 0; 
-                        
-                        // 重置物理頂點判定
-                        lastAnkleY = kickingAnkleY;
-                        goingUp = false;
-                        hasCapturedApex = false;
-
-                        bestFrameDataUrl = null;
-                        bestAngle = 0;
-
-                        statusTextEl.innerText = "💥 追蹤速度中...";
-                        statusTextEl.style.color = "#e74c3c"; 
-                        downloadBtn.style.display = "none";
-                        screenshotImg.style.display = "none";
-
-                    } else if (isKicking) {
-                        // 追蹤絕對最大角度
-                        if (angle > currentMaxAngle) {
-                            currentMaxAngle = angle;
+                        // 階段 1: 等待起腳 (一腳離地)
+                        if (!hasLiftedOff && ankleYDiff > LIFT_THRESHOLD) {
+                            hasLiftedOff = true; 
+                            statusTextEl.innerText = "🚀 動作開始！尋找最高點...";
                         }
 
-                        // ============================================
-                        // ⭐ 終極頂點鎖定法：速度反轉判定 (Velocity = 0)
-                        // ============================================
-                        if (lastAnkleY !== null && !hasCapturedApex) {
-                            
-                            // Y 數值變小代表腳往上抬 (Rising)
-                            if (kickingAnkleY < lastAnkleY) {
-                                goingUp = true;
+                        // 階段 2: 已經起腳，正在空中踢擊
+                        if (hasLiftedOff) {
+                            // 只要角度創新高，就無條件截圖覆蓋 (因為錄影範圍內絕對安全)
+                            if (rawAngle > bestAngle) {
+                                bestAngle = rawAngle;
+                                captureMaxPointFrame(landmarks, bestAngle);
                             }
 
-                            // 如果原本往上，現在 Y 卻變大了，代表【速度歸零，開始掉落】
-                            if (goingUp && kickingAnkleY > lastAnkleY) {
-                                // ⚡ 這一刻就是真正的最高點！立刻鎖死拍照！
-                                captureMaxPointFrame(landmarks, currentMaxAngle);
-                                hasCapturedApex = true; 
-                                statusTextEl.innerText = "📸 頂點鎖定！等待收腿...";
+                            // 階段 3: 踢完腳放下 (著地)
+                            if (ankleYDiff < LIFT_THRESHOLD) {
+                                isRecording = false;
+                                hasLiftedOff = false;
+                                statusTextEl.innerText = "🛑 腳已著地，結束錄影...";
+                                stopMediaRecording(); // 停止錄影，觸發結算
                             }
-                        }
-                        lastAnkleY = kickingAnkleY; // 更新 Y 座標紀錄
-
-                        // 判斷踢擊徹底結束 (等腿完全放下來才亮出結果)
-                        if (angle < currentMaxAngle - END_KICK_DROP) {
-                            dropFrameCount++;
-
-                            if (dropFrameCount >= STABLE_FRAMES) {
-                                isKicking = false;
-                                statusTextEl.innerText = "✅ 完成！請看右下角";
-                                statusTextEl.style.color = "#2ecc71"; 
-                                
-                                // 如果因為特殊原因(例如腿抖動過快)沒抓到頂點，做一個防呆保底
-                                if (!bestFrameDataUrl) {
-                                    captureMaxPointFrame(landmarks, currentMaxAngle);
-                                }
-
-                                if (bestFrameDataUrl) {
-                                    screenshotImg.src = bestFrameDataUrl;
-                                    screenshotImg.style.display = "block";
-                                    downloadBtn.style.display = "block"; 
-                                    maxAngleEl.innerText = bestAngle; 
-                                    
-                                    downloadBtn.onclick = async () => {
-                                        try {
-                                            const res = await fetch(bestFrameDataUrl);
-                                            const blob = await res.blob();
-                                            const file = new File([blob], `kick_${bestAngle}deg.jpg`, { type: 'image/jpeg' });
-                                            
-                                            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                                                await navigator.share({
-                                                    files: [file],
-                                                    title: '前踢最高點紀錄',
-                                                    text: `完美捕捉！最高點角度：${bestAngle} 度`
-                                                });
-                                            } else {
-                                                throw new Error("Share not supported");
-                                            }
-                                        } catch (e) {
-                                            const link = document.createElement('a');
-                                            link.download = `kick_${bestAngle}deg.jpg`;
-                                            link.href = bestFrameDataUrl;
-                                            link.click();
-                                        }
-                                    };
-                                }
-                                
-                                currentMaxAngle = 0;
-                                dropFrameCount = 0;
-                                smoothedAngle = 0;
-                            }
-                        } else {
-                            dropFrameCount = 0;
                         }
                     }
-                } else {
-                    currentAngleEl.style.color = "#95a5a6";
                 }
             }
             canvasCtx.restore();
         }
 
+        // --- 鏡頭與下載相關邏輯 --- 
         function stopMediaTracks(stream) {
             if (stream) stream.getTracks().forEach(track => track.stop());
         }
 
-        function populateCameraList() {
-            cameraSelect.innerHTML = "";
-            videoDevices.forEach((device, index) => {
-                const option = document.createElement('option');
-                option.value = index;
-                option.text = device.label || `未命名鏡頭 ${index + 1}`;
-                cameraSelect.appendChild(option);
-            });
-            cameraSelect.value = currentDeviceIndex;
-            cameraSelect.style.display = "inline-block"; 
-        }
-
         async function getCameras() {
             try {
-                if (videoDevices.length === 0) {
-                    const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
-                    stopMediaTracks(tempStream);
-                }
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 videoDevices = devices.filter(d => d.kind === 'videoinput');
-                
-                const preferred = videoDevices.findIndex(d => {
-                    const label = d.label.toLowerCase();
-                    return (label.includes('back') || label.includes('rear') || label.includes('environment')) &&
-                           !label.includes('tele') && !label.includes('zoom') && 
-                           !label.includes('ir ') && !label.includes('depth');
+                cameraSelect.innerHTML = "";
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = index;
+                    option.text = device.label || `未命名鏡頭 ${index + 1}`;
+                    cameraSelect.appendChild(option);
                 });
-                currentDeviceIndex = preferred !== -1 ? preferred : 0;
-                populateCameraList();
+                cameraSelect.style.display = "inline-block";
             } catch (err) {
                 console.error("獲取鏡頭列表失敗:", err);
             }
         }
 
         async function startCamera() {
-            if (!poseLoaded) { alert("AI 模型尚未準備好，請稍等。"); return; }
-            if (isCameraSwitching) return; 
-
             isCameraSwitching = true; 
-            statusTextEl.innerText = "切換鏡頭中...";
-            statusTextEl.style.color = "#f1c40f";
-
-            while (isProcessingFrame) {
-                await new Promise(r => setTimeout(r, 10));
-            }
-            
             if (currentStream) {
                 stopMediaTracks(currentStream);
-                videoElement.pause();
-                videoElement.srcObject = null; 
-                videoElement.load(); 
-                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                bufferCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
-                tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height); 
             }
-
-            await new Promise(resolve => setTimeout(resolve, 300));
-
             const device = videoDevices[currentDeviceIndex];
             const deviceId = device ? { exact: device.deviceId } : undefined;
             if (device) {
-                const label = device.label.toLowerCase();
-                useFrontCamera = label.includes('front') || label.includes('user') || label.includes('selfie');
+                useFrontCamera = device.label.toLowerCase().includes('front');
             }
-
-            let constraints = { video: { deviceId: deviceId, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
 
             try {
-                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: deviceId, width: { ideal: 1280 }, height: { ideal: 720 } } });
+                videoElement.srcObject = currentStream;
+                await videoElement.play();
+                
+                startBtn.style.display = "none"; 
+                zoomContainer.style.display = "block"; 
+                kickBtn.style.display = "block"; // 顯示踢擊按鈕
+                statusTextEl.innerText = `鏡頭就緒，請準備`;
+                statusTextEl.style.color = "#2ecc71";
             } catch (err) {
-                constraints.video.width = { ideal: 640 };
-                constraints.video.height = { ideal: 480 };
-                try {
-                    currentStream = await navigator.mediaDevices.getUserMedia(constraints);
-                } catch (fallbackErr) {
-                    isCameraSwitching = false;
-                    statusTextEl.innerText = "啟動失敗，請重試";
-                    return;
-                }
+                alert("鏡頭啟動失敗");
             }
-
-            videoElement.srcObject = currentStream;
-            
-            await new Promise((resolve) => { videoElement.onloadeddata = () => resolve(); });
-            
-            await videoElement.play();
-            
-            statusTextEl.innerText = `已切換 (${useFrontCamera ? '前鏡頭 / 鏡像' : '後鏡頭 / 正常'})`;
-            statusTextEl.style.color = "#2ecc71";
-            startBtn.style.display = "none"; 
-            zoomContainer.style.display = "block"; 
-            
             isCameraSwitching = false; 
-
-            if (!hasStartedLoop) {
-                hasStartedLoop = true;
-                requestAnimationFrame(processFrame);
-            }
+            requestAnimationFrame(processFrame);
         }
 
-        async function processFrame(timestamp) {
-            if (timestamp - lastTime < 33) {
-                requestAnimationFrame(processFrame);
-                return;
-            }
-            lastTime = timestamp;
-
-            if (!videoElement.paused && !videoElement.ended && !isProcessingFrame && !isCameraSwitching && videoElement.videoWidth > 0) {
+        async function processFrame() {
+            if (!videoElement.paused && !videoElement.ended && !isProcessingFrame && !isCameraSwitching) {
                 isProcessingFrame = true;
-                try {
-                    await pose.send({image: videoElement});
-                } catch (e) {
-                    console.error("AI 異常:", e);
-                }
+                await pose.send({image: videoElement});
                 isProcessingFrame = false; 
             }
             requestAnimationFrame(processFrame);
         }
 
         startBtn.addEventListener('click', async () => {
-            startBtn.disabled = true;
             await getCameras();
             await startCamera();
         });
 
         cameraSelect.addEventListener('change', async (e) => {
-            if (isCameraSwitching) return;
             currentDeviceIndex = parseInt(e.target.value);
             await startCamera();
         });
 
         zoomSlider.addEventListener('input', (e) => {
-            currentZoomLevel = parseFloat(e.target.value);
-            cameraContainer.style.transform = `scale(${currentZoomLevel})`;
+            cameraContainer.style.transform = `scale(${e.target.value})`;
         });
+
+        // 下載截圖
+        downloadBtn.onclick = () => {
+            const link = document.createElement('a');
+            link.download = `kick_peak_${bestAngle}deg.jpg`;
+            link.href = bestFrameDataUrl;
+            link.click();
+        };
+
+        // 下載影片
+        downloadVideoBtn.onclick = () => {
+            if (!videoBlobUrl) return;
+            const link = document.createElement('a');
+            link.download = `kick_slowmo_${bestAngle}deg.webm`;
+            link.href = videoBlobUrl;
+            link.click();
+        };
 
     </script>
 </body>
