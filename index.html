@@ -189,7 +189,7 @@
             <div class="angle-info" id="finalAngleText">真實最高點: <span id="maxAngle">0</span>°</div>
             <div class="action-buttons">
                 <button id="downloadBtn">📸 下載最高點截圖</button>
-                <button id="downloadVideoBtn">🎬 下載5倍慢動作影片</button>
+                <button id="downloadVideoBtn">🎬 下載慢動作影片</button>
             </div>
         </div>
     </div>
@@ -236,13 +236,16 @@
         let recordedChunks = [];
         let videoBlobUrl = null;
         
-        let isRecording = false;     // 是否已按下踢擊按鈕，開始錄影
-        let hasLiftedOff = false;    // 腳是否已經離地 (開始動作)
+        let isRecording = false;     
+        
+        // 🔥 關鍵修正：確保真正開始起腳的狀態
+        let hasStartedKick = false;  
         let bestFrameDataUrl = null;
         let bestAngle = 0;
 
-        // 判斷腳離地的嚴格門檻：兩腳踝 Y 軸差距需大於畫面高度的 8%
-        const LIFT_THRESHOLD = 0.08; 
+        // 判斷腳離地的門檻 (稍微縮小至 5%，避免重心轉移的微晃動被誤判)
+        const LIFT_THRESHOLD = 0.05; 
+        const START_KICK_THRESHOLD = 40; 
 
         function calculate3DAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
             const dx1 = (ankle1.x - hip1.x) * canvasW;
@@ -291,10 +294,8 @@
             bestAngle = angle;
         }
 
-        // 🎬 開始錄製 Canvas 畫面
         function startMediaRecording() {
             recordedChunks = [];
-            // 擷取 Canvas 畫面，包含骨架
             const stream = canvasElement.captureStream(30); 
             try {
                 mediaRecorder = new MediaRecorder(stream);
@@ -308,19 +309,17 @@
             };
 
             mediaRecorder.onstop = () => {
-                // 將錄好的片段轉為影片
                 const blob = new Blob(recordedChunks, { type: 'video/webm' });
                 if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl);
                 videoBlobUrl = URL.createObjectURL(blob);
                 
-                // 設定 5 倍慢動作播放
+                // 5倍慢動作播放
                 replayVideo.src = videoBlobUrl;
                 replayVideo.playbackRate = 0.2; 
                 
                 replayVideo.style.display = "block";
                 downloadVideoBtn.style.display = "block";
 
-                // 顯示最高點截圖
                 if (bestFrameDataUrl) {
                     screenshotImg.src = bestFrameDataUrl;
                     screenshotImg.style.display = "block";
@@ -328,7 +327,7 @@
                     maxAngleEl.innerText = bestAngle;
                 }
                 
-                statusTextEl.innerText = "✅ 測量完成！(下方為5倍慢動作)";
+                statusTextEl.innerText = "✅ 測量完成！(下方為慢動作回放)";
                 statusTextEl.style.color = "#2ecc71"; 
                 kickBtn.disabled = false;
                 kickBtn.innerText = "🥋 再測一次";
@@ -337,18 +336,16 @@
             mediaRecorder.start();
         }
 
-        // 🛑 停止錄製
         function stopMediaRecording() {
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 mediaRecorder.stop();
             }
         }
 
-        // 🥋 按下踢擊按鈕：清除狀態，開始錄影
         kickBtn.addEventListener('click', () => {
             if (!poseLoaded) return;
             isRecording = true;
-            hasLiftedOff = false;
+            hasStartedKick = false; // 重置踢擊狀態
             bestAngle = 0;
             bestFrameDataUrl = null;
 
@@ -416,31 +413,32 @@
                     let rawAngle = Math.round(calculate3DAngle(leftHip, leftAnkle, rightHip, rightAnkle, canvasElement.width, canvasElement.height));
                     currentAngleEl.innerText = rawAngle;
 
-                    // ⭐ 嚴格判定邏輯 (必須按下按鈕才啟動)
                     if (isRecording) {
-                        // 兩腳的 Y 軸差距 (判定一腳踩死，一腳離地)
+                        // 兩腳的高度差
                         const ankleYDiff = Math.abs(leftAnkle.y - rightAnkle.y);
 
-                        // 階段 1: 等待起腳 (一腳離地)
-                        if (!hasLiftedOff && ankleYDiff > LIFT_THRESHOLD) {
-                            hasLiftedOff = true; 
-                            statusTextEl.innerText = "🚀 動作開始！尋找最高點...";
+                        // 🔥 雙重保險 1：判定真正起腳
+                        // 必須「腳離地 > 5%」且「角度 > 40度」，徹底排除預備動作的晃動
+                        if (!hasStartedKick && ankleYDiff > LIFT_THRESHOLD && rawAngle > START_KICK_THRESHOLD) {
+                            hasStartedKick = true; 
+                            statusTextEl.innerText = "🚀 動作開始！鎖定最高點中...";
                         }
 
-                        // 階段 2: 已經起腳，正在空中踢擊
-                        if (hasLiftedOff) {
-                            // 只要角度創新高，就無條件截圖覆蓋 (因為錄影範圍內絕對安全)
+                        // 空中踢擊過程
+                        if (hasStartedKick) {
+                            // 無條件追蹤最高點並鎖死畫面
                             if (rawAngle > bestAngle) {
                                 bestAngle = rawAngle;
                                 captureMaxPointFrame(landmarks, bestAngle);
                             }
 
-                            // 階段 3: 踢完腳放下 (著地)
-                            if (ankleYDiff < LIFT_THRESHOLD) {
+                            // 🔥 雙重保險 2：判定完全著地結束
+                            // 必須「腳踩回地板 (落差變小)」且「腿已收回 (角度 < 40)」
+                            if (ankleYDiff < LIFT_THRESHOLD && rawAngle < START_KICK_THRESHOLD) {
                                 isRecording = false;
-                                hasLiftedOff = false;
+                                hasStartedKick = false;
                                 statusTextEl.innerText = "🛑 腳已著地，結束錄影...";
-                                stopMediaRecording(); // 停止錄影，觸發結算
+                                stopMediaRecording(); // 關閉錄影，觸發結算
                             }
                         }
                     }
