@@ -247,19 +247,30 @@
         const LIFT_THRESHOLD = 0.08;
         const PRE_BUFFER_DURATION = 2000; // 預錄2秒緩衝（毫秒）
 
-        function calculate3DAngle(hip1, ankle1, hip2, ankle2, canvasW, canvasH) {
-            const dx1 = (ankle1.x - hip1.x) * canvasW;
-            const dy1 = (ankle1.y - hip1.y) * canvasH;
-            const dz1 = (ankle1.z - hip1.z) * canvasW; 
-            const dx2 = (ankle2.x - hip2.x) * canvasW;
-            const dy2 = (ankle2.y - hip2.y) * canvasH;
-            const dz2 = (ankle2.z - hip2.z) * canvasW; 
-            
-            const dotProduct = dx1 * dx2 + dy1 * dy2 + dz1 * dz2;
-            const mag1 = Math.sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1);
-            const mag2 = Math.sqrt(dx2 * dx2 + dy2 * dy2 + dz2 * dz2);
-            if (mag1 === 0 || mag2 === 0) return 0;
-            return Math.acos(dotProduct / (mag1 * mag2)) * (180 / Math.PI);
+        // 計算前踢角度：踢腿(髖→踝)向量 與 垂直向下向量 的夾角
+        // 結果為腳抬起的角度，0°=垂直站立，90°=水平踢，>90°=超過水平
+        function calculateKickAngle(kickHip, kickAnkle, canvasW, canvasH) {
+            const dx = (kickAnkle.x - kickHip.x) * canvasW;
+            const dy = (kickAnkle.y - kickHip.y) * canvasH;
+            const dz = (kickAnkle.z - kickHip.z) * canvasW;
+            const mag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (mag === 0) return 0;
+            // 與垂直向下 (0,1,0) 的夾角；dy/mag = cosAngle
+            const cosAngle = dy / mag;
+            return Math.acos(Math.max(-1, Math.min(1, cosAngle))) * (180 / Math.PI);
+        }
+
+        // 判斷哪隻腳是踢腳（Y軸數值較小 = 畫面中較高 = 踢腳）
+        function getKickLeg(landmarks) {
+            const leftAnkle  = landmarks[27];
+            const rightAnkle = landmarks[28];
+            const leftHip    = landmarks[23];
+            const rightHip   = landmarks[24];
+            if (leftAnkle.y < rightAnkle.y) {
+                return { hip: leftHip, ankle: leftAnkle, side: 'left' };
+            } else {
+                return { hip: rightHip, ankle: rightAnkle, side: 'right' };
+            }
         }
 
         function captureMaxPointFrame(landmarks, angle) {
@@ -458,6 +469,10 @@
             }
         });
 
+        // 著地確認：連續幾幀都偵測到「踢腳回到低位」才算真正著地
+        let landingFrameCount = 0;
+        const LANDING_CONFIRM_FRAMES = 4; // 需要連續4幀確認，避免踢擊過程誤觸
+
         function onResults(results) {
             if (isCameraSwitching) return;
 
@@ -478,42 +493,54 @@
                 drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
 
                 const landmarks = results.poseLandmarks;
-                const leftHip = landmarks[23];
-                const rightHip = landmarks[24];
-                const leftAnkle = landmarks[27];
+                const leftAnkle  = landmarks[27];
                 const rightAnkle = landmarks[28];
+                const leftHip    = landmarks[23];
+                const rightHip   = landmarks[24];
 
                 if (leftHip.visibility > 0.2 && rightHip.visibility > 0.2 && 
                     leftAnkle.visibility > 0.2 && rightAnkle.visibility > 0.2) {
-                    
-                    let rawAngle = Math.round(calculate3DAngle(leftHip, leftAnkle, rightHip, rightAnkle, canvasElement.width, canvasElement.height));
+
+                    // 判斷踢腳並計算正確角度
+                    const kickLeg = getKickLeg(landmarks);
+                    let rawAngle = Math.round(calculateKickAngle(
+                        kickLeg.hip, kickLeg.ankle,
+                        canvasElement.width, canvasElement.height
+                    ));
                     currentAngleEl.innerText = rawAngle;
 
-                    // ⭐ 嚴格判定邏輯 (必須按下按鈕才啟動)
                     if (isRecording) {
-                        // 兩腳的 Y 軸差距 (判定一腳踩死，一腳離地)
                         const ankleYDiff = Math.abs(leftAnkle.y - rightAnkle.y);
 
-                        // 階段 1: 等待起腳 (一腳離地)
+                        // 階段 1：等待起腳
                         if (!hasLiftedOff && ankleYDiff > LIFT_THRESHOLD) {
-                            hasLiftedOff = true; 
+                            hasLiftedOff = true;
+                            landingFrameCount = 0;
                             statusTextEl.innerText = "🚀 動作開始！尋找最高點...";
                         }
 
-                        // 階段 2: 已經起腳，正在空中踢擊
+                        // 階段 2：已起腳，追蹤最高點
                         if (hasLiftedOff) {
-                            // 只要角度創新高，就無條件截圖覆蓋 (因為錄影範圍內絕對安全)
                             if (rawAngle > bestAngle) {
                                 bestAngle = rawAngle;
                                 captureMaxPointFrame(landmarks, bestAngle);
                             }
 
-                            // 階段 3: 踢完腳放下 (著地)
-                            if (ankleYDiff < LIFT_THRESHOLD) {
-                                isRecording = false;
-                                hasLiftedOff = false;
-                                statusTextEl.innerText = "🛑 腳已著地，結束錄影...";
-                                stopMediaRecording(); // 停止錄影，觸發結算
+                            // 階段 3：踢完著地判定
+                            // 必須「兩腳踝高度差縮小」AND「踢腳已有明顯角度後才開始計數」
+                            if (ankleYDiff < LIFT_THRESHOLD && bestAngle > 20) {
+                                landingFrameCount++;
+                                statusTextEl.innerText = `🛬 偵測著地中 (${landingFrameCount}/${LANDING_CONFIRM_FRAMES})...`;
+                                if (landingFrameCount >= LANDING_CONFIRM_FRAMES) {
+                                    isRecording = false;
+                                    hasLiftedOff = false;
+                                    landingFrameCount = 0;
+                                    statusTextEl.innerText = "🛑 著地確認，結束錄影...";
+                                    stopMediaRecording();
+                                }
+                            } else {
+                                // 若還在空中，重置著地計數
+                                landingFrameCount = 0;
                             }
                         }
                     }
